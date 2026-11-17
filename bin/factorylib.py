@@ -148,6 +148,11 @@ def load_factory_toml(root):
     for key in ("fields", "defaults"):
         if not isinstance(conf["jira"][key], dict):
             refuse(f"{path} [jira] {key} must be a table")
+        if not conf["jira"][key]:
+            refuse(f"{path} missing [jira] {key}")
+    account = conf["newrelic"]["account_id"]
+    if isinstance(account, bool) or not isinstance(account, int) or account <= 0:
+        refuse(f"{path} [newrelic] account_id must be a positive integer")
     if conf["repo"]["merge"] != "merge":
         refuse(f'{path} [repo] merge must be "merge"')
     posts = conf["language"]["posts"]

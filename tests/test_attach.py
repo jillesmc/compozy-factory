@@ -91,6 +91,15 @@ INVALID = [  # (text in factory.example.toml, replacement, refusal tail); every 
     ("[jira.fields]\n", "[jira.x]\n", "missing [jira] fields"),
     ('[jira.defaults]\n', '[jira.d]\n', "missing [jira] defaults"),
     ('project = "ACME"', 'project = "ACME"\ndefaults = "x"', "[jira] defaults must be a table"),
+    ('documentacao_anexa   = "customfield_10001"  # select: yes / no\nutilizacao_ia        = "customfield_10002"  # select: yes / no\n'
+     'tipo_atividade       = "customfield_10003"  # select, see [jira.tipo_atividade]\n'
+     'qual_tipo_de_valor   = "customfield_10004"  # Assets, see [jira.tipo_de_valor]\n'
+     'plataformas_afetadas = "customfield_10005"  # Assets, see [jira.plataformas]\n', "", "missing [jira] fields"),
+    ('documentacao_anexa = "20001"   # "no"; the "yes" option when the PR changes docs/ or README\n'
+     'utilizacao_ia = "20002"        # "yes": the team is agents\n', "", "missing [jira] defaults"),
+    ("account_id = 1234567", 'account_id = "1234567"', "[newrelic] account_id must be a positive integer"),
+    ("account_id = 1234567", "account_id = 0", "[newrelic] account_id must be a positive integer"),
+    ("account_id = 1234567", "account_id = true", "[newrelic] account_id must be a positive integer"),
 ]
 
 
