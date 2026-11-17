@@ -1,7 +1,7 @@
 
-## isolated daemon (COMPOZY_HOME=/tmp/cf-it.xDzWsf/home, port 52463)
+## isolated daemon (COMPOZY_HOME=/tmp/cf-it.ctxJ1T/home, port 51917)
 isolation: workspace list is empty (fresh home)
-daemon.json port 52463 pid 524788
+daemon.json port 51917 pid 758146
 
 ## IT-001 install
 installed factory-sentinel
@@ -12,34 +12,38 @@ installed factory-gatekeeper
 installed factory-auditor
 installed tools (factory_intake.py)
 approve before attaching:
-  compozy agent heartbeat sources approve factory-dispatcher deliver --sha256 sha256:490f2871bed72772c3293287218edf1e53ef33640d298fe3540a37d12d04b874 --yes
-  compozy agent heartbeat sources approve factory-auditor due --sha256 sha256:83291145ae4eeef6aaf2c29b81024a4153599a928a91a2226b11bc0500f0bdc8 --yes
-  compozy agent heartbeat authority approve factory-auditor --sha256 sha256:2b0861da695cf7e057b3a834381886289338a30372ad21b315ca50ea3db0cf23 --yes
+  compozy agent heartbeat sources approve factory-dispatcher deliver --sha256 sha256:490f2871bed72772c3293287218edf1e53ef33640d298fe3540a37d12d04b874 --workspace @user --yes
+  compozy agent heartbeat sources approve factory-auditor due --sha256 sha256:83291145ae4eeef6aaf2c29b81024a4153599a928a91a2226b11bc0500f0bdc8 --workspace @user --yes
+  compozy agent heartbeat authority approve factory-auditor --sha256 sha256:2b0861da695cf7e057b3a834381886289338a30372ad21b315ca50ea3db0cf23 --workspace @user --yes
 factory-auditor origin=global
 factory-dispatcher origin=global
 factory-gatekeeper origin=global
 factory-pr-watcher origin=global
 factory-scribe origin=global
 factory-sentinel origin=global
-workspace scratch ws_0ae54e5d1ee149ad
+workspace scratch ws_6c68f239ef845a9a
 hash match source factory-dispatcher/deliver sha256:490f2871bed72772c3293287218edf1e53ef33640d298fe3540a37d12d04b874
 hash match source factory-auditor/due sha256:83291145ae4eeef6aaf2c29b81024a4153599a928a91a2226b11bc0500f0bdc8
 hash match authority factory-auditor sha256:2b0861da695cf7e057b3a834381886289338a30372ad21b315ca50ea3db0cf23
 
-## approve printed commands (operator, isolated daemon)
-approved: sources approve factory-dispatcher
-approved: sources approve factory-auditor
-approved: authority approve factory-auditor
+## approve: run each command exactly as bin/install printed it (operator, isolated daemon)
+ok: compozy agent heartbeat sources approve factory-dispatcher deliver --sha256 sha256:490f2871bed72772c3293287218edf1e53ef33640d298fe3540a37d12d04b874 --workspace @user --yes
+ok: compozy agent heartbeat sources approve factory-auditor due --sha256 sha256:83291145ae4eeef6aaf2c29b81024a4153599a928a91a2226b11bc0500f0bdc8 --workspace @user --yes
+ok: compozy agent heartbeat authority approve factory-auditor --sha256 sha256:2b0861da695cf7e057b3a834381886289338a30372ad21b315ca50ea3db0cf23 --workspace @user --yes
+daemon: factory-dispatcher sources approved
+daemon: factory-auditor sources approved
+daemon: factory-auditor authority approved
 
 ## IT-002 attach scratch
-attached factory-sentinel     (ainst-f1705e27b809f461)
-attached factory-scribe       (ainst-b932ae38efe2a3d5)
-attached factory-dispatcher   (ainst-e83b7c7a9e94776e)
-attached factory-pr-watcher   (ainst-fc63458b0b705c55)
-attached factory-gatekeeper   (ainst-43afaa3680763821)
-attached factory-auditor      (ainst-df4430e34f8c67ee)
+attach by path: bin/attach /tmp/cf-it.ctxJ1T/scratch
+attached factory-sentinel     (ainst-9e5d88a983b8f4a4)
+attached factory-scribe       (ainst-ae19cc1c485db8fe)
+attached factory-dispatcher   (ainst-105817e6da7fd49a)
+attached factory-pr-watcher   (ainst-a2df0bd269a2b099)
+attached factory-gatekeeper   (ainst-fb6e6f79527e7b27)
+attached factory-auditor      (ainst-c6e9bb2369a48890)
 active instances: factory-auditor factory-dispatcher factory-gatekeeper factory-pr-watcher factory-scribe factory-sentinel
-re-run:
+attach by name: bin/attach scratch
 exists factory-sentinel
 exists factory-scribe
 exists factory-dispatcher

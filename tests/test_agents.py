@@ -6,6 +6,9 @@ import sys
 import factorylib as fl
 from conftest import REPO, run
 
+sys.path.insert(0, str(REPO / "tools"))
+import factory_intake as fi  # noqa: E402
+
 IDENTITY = {  # _dx.md › Agent identities
     "factory-sentinel": ("Factory Sentinel", "Reads New Relic errors, error logs and incidents for the project's app, classifies each signal and proposes to the operator which ones deserve an issue. Never opens issues or writes code."),
     "factory-scribe": ("Factory Scribe", "Turns findings and reports into deduplicated GitHub issues and, when the item is actionable, into the official Jira work item with the required fields."),
@@ -51,6 +54,7 @@ def test_ut_021_identity_accepts_and_peer_names():
         assert fl.frontmatter_field(text, "description") == description and len(description) <= 280
         accepts = fl.frontmatter_field(text, "accepts")
         assert accepts == input_block(text), f"{name}: accepts must mirror ## Input"
+        assert accepts is not None or name == "factory-sentinel", f"{name}: only the sentinel has no accepts"
         assert accepts is None or len(accepts) <= 8 and all(len(a) <= 160 for a in accepts)
         for path in (REPO / "agents" / name).rglob("*"):
             if path.is_file() and "__pycache__" not in path.parts:
@@ -69,6 +73,12 @@ def test_prompts_read_factory_toml_and_refuse_on_missing_keys():
     watcher = agent_text("factory-pr-watcher")
     assert "runs-on: {ci.runner}" in watcher and "base `{repo.base}`" in watcher
     assert "python3 ~/.compozy/factory/tools/factory_intake.py" in agent_text("factory-scribe")
+    for name in ("factory-sentinel", "factory-auditor"):  # C-1: the account is pinned on every NRQL call
+        assert "`[newrelic] account_id`" in agent_text(name) and "account `{newrelic.account_id}`" in agent_text(name)
+    gatekeeper = agent_text("factory-gatekeeper")  # C-2: merge commit only
+    assert "--{repo.merge}" not in gatekeeper and gatekeeper.count("--merge --admin") == 3
+    assert 'refused: factory.toml [repo] merge must be "merge"' in gatekeeper
+    assert set(fl.POSTS) == set(fi.TEXT), "attach and factory_intake.py support the same post languages"
 
 
 def run_source(path, cwd, stdin="{}"):

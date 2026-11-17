@@ -82,21 +82,28 @@ while read -r _ _ _ kind _ agent rest; do
   echo "hash match $label $daemon"
 done < "$T/approvals"
 
-step "approve printed commands (operator, isolated daemon)"
+step "approve: run each command exactly as bin/install printed it (operator, isolated daemon)"
 while read -r line; do
   read -ra cmd <<<"$line"
-  iso "${cmd[@]}" --workspace scratch >/dev/null 2>&1 && echo "approved: ${cmd[3]} ${cmd[4]} ${cmd[5]}"
+  (cd "$T" && iso "${cmd[@]}" >/dev/null 2>"$T/approve.err") ||
+    { echo "FAILED: $line"; cat "$T/approve.err"; exit 1; }
+  echo "ok: $line"
 done < "$T/approvals"
+cz agent heartbeat sources factory-dispatcher --workspace scratch -o json | json 'assert all(s["approved"] for s in d["scripts"]); print("daemon: factory-dispatcher sources approved")'
+cz agent heartbeat sources factory-auditor --workspace scratch -o json | json 'assert all(s["approved"] for s in d["scripts"]); print("daemon: factory-auditor sources approved")'
+cz agent heartbeat authority show factory-auditor --workspace scratch -o json | json 'assert d["status"] == "approved", d["status"]; print("daemon: factory-auditor authority", d["status"])'
 
 step "IT-002 attach scratch"
 cp "$REPO/factory.example.toml" "$SCRATCH/.compozy/factory/factory.toml"
-iso "$REPO/bin/attach" scratch
+echo "attach by path: bin/attach $SCRATCH"
+iso "$REPO/bin/attach" "$SCRATCH"
 cz agent instance list --workspace scratch -o json | json '
 act = sorted(i["agent_name"] for i in d["instances"] if i["state"] == "active")
 print("active instances:", " ".join(act))
 assert act == sorted(["factory-sentinel", "factory-scribe", "factory-dispatcher", "factory-pr-watcher", "factory-gatekeeper", "factory-auditor"]), act'
-echo "re-run:"
-iso "$REPO/bin/attach" scratch
+echo "attach by name: bin/attach scratch"
+iso "$REPO/bin/attach" scratch | tee "$T/attach2.out"
+[ "$(grep -c '^exists factory-' "$T/attach2.out")" = 6 ] || { echo "attach by name did not see the six instances"; exit 1; }
 
 step "IT-003 migrate vigia-pr memory"
 mkdir -p "$SCRATCH/.compozy/agents/vigia-pr"

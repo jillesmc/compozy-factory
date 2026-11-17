@@ -1,5 +1,7 @@
 """Run: python3 -m pytest tools/test_factory_intake.py"""
 import json
+import os
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -40,3 +42,19 @@ def test():
 
 if __name__ == "__main__":
     test()
+
+
+def test_unsupported_post_language_is_refused_before_posting(tmp_path):
+    (tmp_path / ".compozy" / "factory").mkdir(parents=True)
+    (tmp_path / ".compozy" / "factory" / "factory.toml").write_text(
+        '[repo]\ngithub = "acme/acme-api"\n[language]\nposts = "es"\n')
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "gh").write_text(f"#!/bin/sh\ntouch {tmp_path}/gh-called\n")
+    (bin_dir / "gh").chmod(0o755)
+    proc = subprocess.run([sys.executable, str(Path(fi.__file__)), "create", "--app", "acme-api-production"],
+                          cwd=tmp_path, input=json.dumps(F), capture_output=True, text=True,
+                          env={**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"})
+    assert proc.returncode != 0
+    assert proc.stderr.strip() == 'refused: [language] posts "es" not supported by factory_intake.py (pt-BR, en)'
+    assert not (tmp_path / "gh-called").exists() and not (tmp_path / ".compozy" / "tasks").exists()

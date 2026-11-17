@@ -56,7 +56,7 @@ def test_unapproved_source_refuses_that_agent_with_the_approve_command(fake, wor
     proc = run("attach", str(workspace), env=fake.env())
     assert proc.returncode == 1
     assert ("refused: factory-dispatcher source deliver not approved; run "
-            "compozy agent heartbeat sources approve factory-dispatcher deliver --sha256 sha256:abc --yes") in proc.stdout
+            "compozy agent heartbeat sources approve factory-dispatcher deliver --sha256 sha256:abc --workspace @user --yes") in proc.stdout
     creates = [c[3] for c in fake.calls if c[:3] == ["agent", "instance", "create"]]
     assert "factory-dispatcher" not in creates and len(creates) == 5
 
@@ -77,3 +77,40 @@ def test_reload_archives_and_recreates_each_agent(fake, workspace):
     assert proc.stdout.splitlines() == [
         "== factory-scribe", "   main: sess-factory-scribe provider: claude-mm4",
         "== factory-auditor", "   (no active instance)", "   main: sess-factory-auditor provider: claude-mm4"]
+
+
+INVALID = [  # (text in factory.example.toml, replacement, refusal tail); every case refuses before any CLI call
+    ('authors = ["octocat"]', 'authors = "octocat"', "[authorization] authors must be a non-empty list of strings"),
+    ('authors = ["octocat"]', "authors = []", "[authorization] authors must be a non-empty list of strings"),
+    ('agents = ["factory-sentinel", "factory-scribe", "factory-dispatcher",\n'
+     '          "factory-pr-watcher", "factory-gatekeeper", "factory-auditor"]', "agents = []",
+     "[team] agents must be a non-empty list of strings"),
+    ('merge = "merge"', 'merge = "squash"', '[repo] merge must be "merge"'),
+    ('posts = "pt-BR"', 'posts = "es"', '[language] posts "es" not supported by factory_intake.py (pt-BR, en)'),
+    ("account_id = 1234567", "", "missing [newrelic] account_id"),
+    ("[jira.fields]\n", "[jira.x]\n", "missing [jira] fields"),
+    ('[jira.defaults]\n', '[jira.d]\n', "missing [jira] defaults"),
+    ('project = "ACME"', 'project = "ACME"\ndefaults = "x"', "[jira] defaults must be a table"),
+]
+
+
+def test_attach_refuses_invalid_values_with_zero_cli_calls(fake, workspace):
+    toml = workspace / ".compozy" / "factory" / "factory.toml"
+    original = toml.read_text()
+    for old, new, tail in INVALID:
+        assert old in original, old
+        text = original.replace(old, new, 1)
+        if tail.endswith("must be a table"):
+            text = text.replace("[jira.defaults]\n", "[jira.d]\n")
+        toml.write_text(text)
+        proc = run("attach", str(workspace), env=fake.env())
+        assert (proc.returncode, proc.stdout.strip()) == (1, f"refused: {toml} {tail}"), (new, proc.stdout)
+    assert fake.calls == []
+
+
+def test_omitted_team_means_all_six(fake, workspace):
+    toml = workspace / ".compozy" / "factory" / "factory.toml"
+    text = toml.read_text()
+    toml.write_text(text[:text.index("[team]")] + text[text.index("[repo]"):])
+    assert run("attach", str(workspace), env=fake.env()).returncode == 0
+    assert [c[3] for c in fake.calls if c[:3] == ["agent", "instance", "create"]] == fl.AGENTS

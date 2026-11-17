@@ -41,7 +41,7 @@ def test_ut_003_changed_deliver_prints_source_approval_with_new_hash(repo, home)
     proc = run("install", env={"COMPOZY_HOME": str(home)}, repo_root=repo)
     digest = fl.script_hash(deliver)
     assert "updated factory-dispatcher" in proc.stdout
-    assert f"compozy agent heartbeat sources approve factory-dispatcher deliver --sha256 {digest} --yes" in proc.stdout
+    assert f"compozy agent heartbeat sources approve factory-dispatcher deliver --sha256 {digest} --workspace @user --yes" in proc.stdout
     assert "factory-auditor" not in proc.stdout.split("approve before attaching:")[1], "unchanged agents need no approval"
 
 
@@ -53,7 +53,7 @@ def test_ut_004_changed_authority_block_prints_authority_approval(repo, home):
     new = fl.authority_digest(heartbeat.read_text())
     assert new and new != old
     proc = run("install", env={"COMPOZY_HOME": str(home)}, repo_root=repo)
-    assert f"compozy agent heartbeat authority approve factory-auditor --sha256 {new} --yes" in proc.stdout
+    assert f"compozy agent heartbeat authority approve factory-auditor --sha256 {new} --workspace @user --yes" in proc.stdout
     # Digest reference computed with Go encoding/json (HTML escaping, sorted actions) as the daemon does.
     tricky = ('---\nversion: 1\nactions:\n  - id: zeta\n    title: "Z <tag> & \\"q\\""\n'
               '    instructions: "Linha com acentuação — e <!-- marker --> & more."\n    auto_accept: false\n'

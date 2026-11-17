@@ -27,7 +27,7 @@ COMPLETED = {"completed", "complete", "done", "finished"}
 COMPLEXITY = {"critical": "high", "high": "high", "medium": "medium", "low": "low"}
 REPO = ""        # [repo] github, set by main()
 LANG = "pt-BR"   # [language] posts, set by main()
-# Posted text follows [language] posts; pt-BR keeps the original wording, anything else gets English.
+# Posted text follows [language] posts; only these languages are supported (others are refused).
 TEXT = {
     "pt-BR": {"intro": "Achado do New Relic (factory-sentinel) em", "field": "Campo", "value": "Valor",
               "severity": "Severidade", "count": "Ocorrências", "window": "Janela", "transaction": "Transação",
@@ -41,7 +41,7 @@ TEXT = {
 
 
 def text(key):
-    return TEXT.get(LANG, TEXT["en"])[key]
+    return TEXT[LANG][key]
 
 
 def factory_value(section, key):
@@ -216,6 +216,8 @@ def main():
     a = p.parse_args()
     global REPO, LANG
     REPO, LANG = factory_value("repo", "github"), factory_value("language", "posts")
+    if LANG not in TEXT:
+        sys.exit(f'refused: [language] posts "{LANG}" not supported by factory_intake.py ({", ".join(TEXT)})')
     f = json.load(sys.stdin)
     missing = [k for k in ("title", "severity", "error_class", "transaction", "evidence_nrql") if not f.get(k)]
     if missing or not a.app.strip():

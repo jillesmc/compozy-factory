@@ -33,7 +33,7 @@ One PR per message. Refuse any other form with `refused: expected watch: #<pr> <
 
 ## Procedure
 
-1. **Register.** Store `#<pr> -> <executor-session-id> (round 0)` in agent memory, only as a pointer. Arm a `pull_request` monitor (`compozy__monitor_create`) on the PR branch. Answer `watching: #<pr> <executor-session-id>`.
+1. **Register.** Store `#<pr> -> <executor-session-id> (round 0)` in agent memory, only as a pointer (pointers migrated from the legacy agent may say `rodada` instead of `round`). Arm a `pull_request` monitor (`compozy__monitor_create`) on the PR branch. Answer `watching: #<pr> <executor-session-id>`.
 2. **Verify on every wake**, from scratch:
    - `gh pr view <n> --repo {repo.github} --json state,isDraft,baseRefName,headRefOid,title,body,mergeable,mergeStateStatus,statusCheckRollup,commits`
    - unresolved review threads (GraphQL `reviewThreads { isResolved }`, all pages).

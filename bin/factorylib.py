@@ -13,8 +13,9 @@ AGENTS = ["factory-sentinel", "factory-scribe", "factory-dispatcher",
 # BR-5: keys every attached project must define, in the order they are reported.
 REQUIRED = [("language", "posts"), ("authorization", "authors"),
             ("repo", "github"), ("repo", "base"), ("repo", "release"), ("repo", "merge"),
-            ("ci", "runner"), ("newrelic", "app_name"),
+            ("ci", "runner"), ("newrelic", "account_id"), ("newrelic", "app_name"),
             ("jira", "site"), ("jira", "project"), ("jira", "fields"), ("jira", "defaults")]
+POSTS = ("pt-BR", "en")  # languages tools/factory_intake.py has text for
 
 
 def compozy_home():
@@ -99,11 +100,12 @@ def frontmatter_field(text, key):
 
 
 def approve_source_command(agent, script, digest):
-    return f"compozy agent heartbeat sources approve {agent} {script} --sha256 {digest} --yes"
+    # Approvals are keyed by definition dir; @user targets the global definition from any cwd.
+    return f"compozy agent heartbeat sources approve {agent} {script} --sha256 {digest} --workspace @user --yes"
 
 
 def approve_authority_command(agent, digest):
-    return f"compozy agent heartbeat authority approve {agent} --sha256 {digest} --yes"
+    return f"compozy agent heartbeat authority approve {agent} --sha256 {digest} --workspace @user --yes"
 
 
 def compozy(*args):
@@ -136,9 +138,21 @@ def load_factory_toml(root):
     except tomllib.TOMLDecodeError as exc:
         refuse(f"{path} invalid TOML ({exc})")
     for section, key in REQUIRED:
-        value = conf.get(section, {}).get(key)
-        if value in (None, "", [], {}):
+        if conf.get(section, {}).get(key) in (None, ""):
             refuse(f"{path} missing [{section}] {key}")
+    lists = [("authorization", "authors")] + ([("team", "agents")] if "agents" in conf.get("team", {}) else [])
+    for section, key in lists:
+        value = conf[section][key]
+        if not (isinstance(value, list) and value and all(isinstance(v, str) and v.strip() for v in value)):
+            refuse(f"{path} [{section}] {key} must be a non-empty list of strings")
+    for key in ("fields", "defaults"):
+        if not isinstance(conf["jira"][key], dict):
+            refuse(f"{path} [jira] {key} must be a table")
+    if conf["repo"]["merge"] != "merge":
+        refuse(f'{path} [repo] merge must be "merge"')
+    posts = conf["language"]["posts"]
+    if posts not in POSTS:
+        refuse(f'{path} [language] posts "{posts}" not supported by factory_intake.py ({", ".join(POSTS)})')
     return path, conf
 
 
