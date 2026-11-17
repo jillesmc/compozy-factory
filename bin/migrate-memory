@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Copy agent memory from old agent names to new ones in one workspace.
+
+Usage: bin/migrate-memory --workspace <ws> --map old=new[,old=new] [--append]
+
+The new memory starts with `Migrated from <old> (<workspace>) on <date>` followed by the old
+entries. A target that already has memory is refused unless --append. Old memory is never
+touched.
+"""
+import argparse
+import subprocess
+import sys
+from datetime import date
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import factorylib as fl  # noqa: E402
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--workspace", required=True)
+    parser.add_argument("--map", required=True, help="old=new[,old=new]")
+    parser.add_argument("--append", action="store_true", help="append to a target that already has memory")
+    args = parser.parse_args()
+    ws = args.workspace
+    pairs = []
+    for item in args.map.split(","):
+        old, sep, new = item.strip().partition("=")
+        if not (sep and old and new):
+            fl.refuse(f"--map entry {item!r} is not old=new")
+        pairs.append((old, new))
+
+    # Read everything first so a refusal writes nothing.
+    plans = []
+    for old, new in pairs:
+        source = fl.compozy("agent", "memory", "inspect", old, "--workspace", ws)["content"]
+        if not source.strip():
+            plans.append((old, new, None, None))
+            continue
+        target = fl.compozy("agent", "memory", "inspect", new, "--workspace", ws)
+        if target["content"].strip() and not args.append:
+            fl.refuse(f"{new} already has memory; pass --append")
+        plans.append((old, new, source, target))
+
+    for old, new, source, target in plans:
+        if source is None:
+            print(f"skipped {old} (empty)")
+            continue
+        header = f"Migrated from {old} ({ws}) on {date.today().isoformat()}\n"
+        existing = target["content"].rstrip("\n")
+        body = (existing + "\n" if existing else "") + header + source.rstrip("\n") + "\n"
+        proc = subprocess.run(["compozy", "agent", "memory", "write", new, "--workspace", ws, "--stdin",
+                               "--expected-digest", target["digest"], "-o", "json"],
+                              input=body, capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(f"memory write {new}: {(proc.stderr or proc.stdout).strip()[:500]}")
+        print(f"migrated {old} -> {new} ({len(source.rstrip(chr(10)).splitlines())} lines)")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)

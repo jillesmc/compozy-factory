@@ -1,0 +1,146 @@
+"""Shared helpers for the compozy-factory operator scripts (Python 3 stdlib only)."""
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+AGENTS = ["factory-sentinel", "factory-scribe", "factory-dispatcher",
+          "factory-pr-watcher", "factory-gatekeeper", "factory-auditor"]
+# BR-5: keys every attached project must define, in the order they are reported.
+REQUIRED = [("language", "posts"), ("authorization", "authors"),
+            ("repo", "github"), ("repo", "base"), ("repo", "release"), ("repo", "merge"),
+            ("ci", "runner"), ("newrelic", "app_name"),
+            ("jira", "site"), ("jira", "project"), ("jira", "fields"), ("jira", "defaults")]
+
+
+def compozy_home():
+    return Path(os.environ.get("COMPOZY_HOME") or Path.home() / ".compozy").expanduser()
+
+
+def refuse(message):
+    print(f"refused: {message}")
+    sys.exit(1)
+
+
+def script_hash(path):
+    """Same value the daemon demands for `heartbeat sources approve --sha256`."""
+    return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _scalar(raw):
+    raw = raw.strip()
+    if raw.startswith('"'):
+        return json.loads(raw)
+    if raw.startswith("'"):
+        return raw[1:-1].replace("''", "'")
+    if raw in ("true", "false"):
+        return raw == "true"
+    return raw
+
+
+def heartbeat_actions(text):
+    """Parse the `actions:` list of a HEARTBEAT.md frontmatter (flat scalar maps only)."""
+    front = text.split("\n---", 1)[0]
+    actions, inside = [], False
+    for line in front.splitlines():
+        if line.startswith("check_ins:"):
+            # ponytail: check_ins blocks are not hashed here; no factory agent declares one.
+            raise ValueError("check_ins authority blocks are not supported by bin/install")
+        if not line.startswith(" ") and line.strip():
+            inside = line.startswith("actions:")
+            continue
+        if not inside or not line.strip():
+            continue
+        item = line.strip()
+        if item.startswith("- "):
+            actions.append({})
+            item = item[2:]
+        key, _, value = item.partition(":")
+        actions[-1][key.strip()] = _scalar(value)
+    return actions
+
+
+def authority_digest(heartbeat_text):
+    """Mirror of CompozyOS heartbeat.AuthorityDigest for blocks without check_ins or MCP read-only tools."""
+    actions = heartbeat_actions(heartbeat_text)
+    if not actions:
+        return ""
+    ordered = [{"id": a.get("id", ""), "title": a.get("title", ""),
+                "instructions": a.get("instructions", ""), "auto_accept": bool(a.get("auto_accept", False))}
+               for a in sorted(actions, key=lambda a: a.get("id", ""))]
+    data = json.dumps({"check_ins": {}, "actions": ordered}, separators=(",", ":"), ensure_ascii=False)
+    # Go's encoding/json escapes HTML characters and line/paragraph separators.
+    for char, escaped in (("<", "\\u003c"), (">", "\\u003e"), ("&", "\\u0026"),
+                          (" ", "\\u2028"), (" ", "\\u2029")):
+        data = data.replace(char, escaped)
+    return "sha256:" + hashlib.sha256(data.encode()).hexdigest()
+
+
+def frontmatter_field(text, key):
+    """Read one top-level scalar or `- item` list from AGENT.md frontmatter."""
+    front = text.split("\n---", 1)[0].split("---\n", 1)[-1]
+    lines = front.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith(f"{key}:"):
+            value = line.split(":", 1)[1]
+            if value.strip():
+                return _scalar(value)
+            items = []
+            for nxt in lines[i + 1:]:
+                if not nxt.startswith("  - "):
+                    break
+                items.append(_scalar(nxt[4:]))
+            return items
+    return None
+
+
+def approve_source_command(agent, script, digest):
+    return f"compozy agent heartbeat sources approve {agent} {script} --sha256 {digest} --yes"
+
+
+def approve_authority_command(agent, digest):
+    return f"compozy agent heartbeat authority approve {agent} --sha256 {digest} --yes"
+
+
+def compozy(*args):
+    """Run the CompozyOS CLI and return parsed JSON (or None for empty output); raises on failure."""
+    proc = subprocess.run(["compozy", *args, "-o", "json"], capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"compozy {' '.join(args)}: {(proc.stderr or proc.stdout).strip()[:500]}")
+    return json.loads(proc.stdout) if proc.stdout.strip() else None
+
+
+def workspace_root(workspace):
+    """A path argument is used as is; a name or ID is resolved through the daemon."""
+    path = Path(workspace).expanduser()
+    if path.is_dir():
+        return path.resolve()
+    info = compozy("workspace", "info", workspace)
+    root = info.get("root_dir") or info.get("workspace", {}).get("root_dir")
+    if not root:
+        raise RuntimeError(f"workspace {workspace}: no root_dir in compozy workspace info")
+    return Path(root)
+
+
+def load_factory_toml(root):
+    """Return (path, config) or refuse naming the file or the first missing BR-5 key."""
+    path = root / ".compozy" / "factory" / "factory.toml"
+    if not path.is_file():
+        refuse(f"{path} missing")
+    try:
+        conf = tomllib.loads(path.read_text())
+    except tomllib.TOMLDecodeError as exc:
+        refuse(f"{path} invalid TOML ({exc})")
+    for section, key in REQUIRED:
+        value = conf.get(section, {}).get(key)
+        if value in (None, "", [], {}):
+            refuse(f"{path} missing [{section}] {key}")
+    return path, conf
+
+
+def team(conf):
+    return conf.get("team", {}).get("agents") or AGENTS

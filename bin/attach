@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""Create one always-on instance per factory agent in a workspace.
+
+Usage: bin/attach <workspace> [--agents a,b]
+
+<workspace> is a CompozyOS workspace name, ID or path. Refuses before any CompozyOS call when
+<root>/.compozy/factory/factory.toml is missing or lacks a required key. Agents come from
+factory.toml [team] agents (default: all six) unless --agents narrows them. An agent whose
+source script is not approved is refused with the approve command; the others still attach.
+"""
+import argparse
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import factorylib as fl  # noqa: E402
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("workspace")
+    parser.add_argument("--agents", help="comma-separated subset of factory agents")
+    args = parser.parse_args()
+
+    _, conf = fl.load_factory_toml(fl.workspace_root(args.workspace))
+    agents = [a.strip() for a in args.agents.split(",") if a.strip()] if args.agents else fl.team(conf)
+    ws = args.workspace
+
+    listed = fl.compozy("agent", "instance", "list", "--workspace", ws, "--limit", "100")
+    existing = {i["agent_name"] for i in listed.get("instances", []) if i.get("state") != "archived"}
+    refused = False
+    for agent in agents:
+        if agent in existing:
+            print(f"exists {agent}")
+            continue
+        sources = fl.compozy("agent", "heartbeat", "sources", agent, "--workspace", ws)
+        pending = [s for s in sources.get("scripts", []) if not s.get("approved")]
+        if pending:
+            for script in pending:
+                command = fl.approve_source_command(agent, script["name"], script["sha256"])
+                print(f"refused: {agent} source {script['name']} not approved; run {command}")
+            refused = True
+            continue
+        created = fl.compozy("agent", "instance", "create", agent, "--workspace", ws)
+        print(f"attached {agent:<20} ({created['instance']['id']})")
+    sys.exit(1 if refused else 0)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
