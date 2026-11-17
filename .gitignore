@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.DS_Store
+# Conductor checkpoint stays local
+.compozy/tasks/**/_run.md
