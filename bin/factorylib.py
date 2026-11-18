@@ -162,6 +162,8 @@ def load_factory_toml(root):
     for key in ("extension", "repo", "agent"):
         if not isinstance(review[key], str) or not review[key].strip():
             refuse(f"{path} [review] {key} must be a non-empty string")
+    if review["extension"] != "github-app-review":  # every agent calls ext__github_app_review__* tools
+        refuse(f'{path} [review] extension must be "github-app-review"')
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", review["repo"]):
         refuse(f'{path} [review] repo "{review["repo"]}" must be owner/name')
     if review["repo"] != conf["repo"]["github"]:

@@ -8,7 +8,6 @@ model: sonnet
 permissions: approve-all
 tools:
   - compozy__*
-  - mcp__atlassian__*
   - ext__newrelic__*
   - ext__github_app_review__merge_gate
   - ext__github_app_review__upsert_promotion
@@ -65,7 +64,7 @@ Refusal: `refused #<pr>: <first condition that failed>` to the sender, and stop.
 ## Merge into the base branch
 
 1. Only after every check above passed, including the merge gate: `env -u GH_TOKEN gh pr merge <n> --repo {repo.github} --merge --match-head-commit <full-sha>`; confirm `MERGED` with `gh pr view <n> --json state,mergeCommit`.
-2. Do not transition Jira here: Done comes only after the deploy (in this workflow, from In Progress only Blocked, Canceled and Done exist). Before any transition, check that the fields of `[jira.fields]` are filled (Assets in the full format described in the factory-scribe's AGENT.md; `{"key"}` is silently dropped) and complete what is missing. With the Atlassian MCP down, use the `twg jira workitem ...` CLI (`get --fields`, `update --fields-json`, `transitions query`, `transition --transition-id`).
+2. Do not transition Jira here: Done comes only after the deploy (in this workflow, from In Progress only Blocked, Canceled and Done exist). Before any transition, check that the fields of `[jira.fields]` are filled (Assets in the full format described in the factory-scribe's AGENT.md; `{"key"}` is silently dropped) and complete what is missing. Jira goes through the `twg jira workitem ...` CLI (`get --fields`, `update --fields-json`, `transitions query`, `transition --transition-id`, `comment`).
 3. **Cleanup:** archive **only** the executor session whose id came in the `watch:`/`merged:` (the `<executor-session-id>`; check with `compozy__session_status` that its agent is `code_implementer`). Never archive or stop a session of an always-on agent (factory-dispatcher, factory-pr-watcher, factory-scribe, factory-sentinel, factory-auditor, factory-gatekeeper), even if it shows up as the worktree's creator. Command: `compozy session archive <id> --stop`, and remove the worktree with `compozy__worktree_remove` (`delete_branch: true`). If the worktree has uncommitted changes or a HEAD different from the merged head, save `git diff` + `git log -p origin/{repo.base}..HEAD` to `.compozy/patches/<worktree>.patch`, keep the worktree and report it.
 4. Upsert the **promotion PR** (below).
 5. Answer `merged #<pr> at <sha>`.
@@ -77,6 +76,8 @@ The GitHub App owns the promotion PR `{repo.base} → {repo.release}`; you never
 1. After every merge into `{repo.base}`, call `ext__github_app_review__upsert_promotion` with `{"repo":"{review.repo}"}`.
    - `created: false` and `number: null`: nothing to promote; stop here.
    - Cause `promotion_conflict`: warn the operator with `compozy__notify`, naming the PR from the error, and do nothing else with the promotion.
+   - Cause `config_invalid`: warn the operator with `compozy__notify` (cause and recovery) and do not retry; the next merge into `{repo.base}` calls it again.
+   - Any other cause (`rate_limited`, `github_unavailable`, `credential_absent`, …): warn the operator with `compozy__notify` (cause and recovery) and register a `compozy__monitor_create` with `kind: "timer"`, firing after the reset time for `rate_limited` and after 15 min otherwise; on that wake, repeat this step. Never leave merged work without a pending promotion or a warning.
    - Otherwise keep `number`, `head_sha` and `included_prs`. The train items are `included_prs`; read each one's title (`{jira.project}` key) and `Closes #<issue>` lines with `gh pr view <pr> --repo {repo.github} --json title,body`.
 2. Ask for approval with `compozy__notify`: "Deploy ready: approve promotion #<number> at <head_sha> on GitHub (<keys>)." Ask once per head.
 3. Arm a `compozy__monitor_create` with `kind: "pull_request"` on branch `{repo.base}` (the promotion PR's head branch), so reviews, checks and pushes wake you. Do not merge on anything else.

@@ -147,6 +147,7 @@ REVIEW_INVALID = [  # (replacement for the example [review] block, refusal tail)
     ('extension = "github-app-review"\nrepo = "acme-api"\nagent = "factory-reviewer"\n', '[review] repo "acme-api" must be owner/name'),
     ('extension = "github-app-review"\nrepo = "acme/other"\nagent = "factory-reviewer"\n', '[review] repo must equal [repo] github "acme/acme-api"'),
     ('extension = "github-app-review"\nrepo = "acme/acme-api"\nagent = "factory-scribe"\n', "[review] agent must be one of: factory-reviewer"),
+    ('extension = "other-review"\nrepo = "acme/acme-api"\nagent = "factory-reviewer"\n', '[review] extension must be "github-app-review"'),
 ]
 
 

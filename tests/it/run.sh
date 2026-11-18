@@ -142,12 +142,29 @@ if [ -f "$EXT/extension.toml" ]; then
 else
   echo "github-app-review not found at $EXT: checking native tools only"
 fi
+# Same for the newrelic extension, so the gatekeeper's ext__newrelic__* pattern is checked too.
+NR=${NR_EXT:-$HOME/.compozy/extensions/newrelic}
+if [ -f "$NR/extension.toml" ]; then
+  cz extension install "$NR" --allow-unverified --yes >/dev/null
+  for kv in NEW_RELIC_ACCOUNT_ID=1 NEW_RELIC_API_KEY=dummy NEW_RELIC_APP=acme-api; do
+    printf '%s' "${kv#*=}" | cz extension secrets set newrelic --env "${kv%%=*}" --value-stdin >/dev/null
+  done
+  cz extension enable newrelic >/dev/null
+  echo "newrelic installed from $NR (dummy secrets)"
+else
+  echo "newrelic not found at $NR: ext__newrelic__* not checked"
+fi
 for _ in $(seq 1 30); do  # extension tools register asynchronously
-  [ ! -f "$EXT/extension.toml" ] && break
-  cz tool info ext__github_app_review__upsert_promotion --workspace scratch -o json >/dev/null 2>&1 && break
+  cz tool list --workspace scratch -o json | json '
+import sys
+ids = {t["descriptor"]["tool_id"] for t in d["tools"]}
+need = [p for p, on in (("ext__github_app_review__", "'"$([ -f "$EXT/extension.toml" ] && echo 1)"'"),
+                        ("ext__newrelic__", "'"$([ -f "$NR/extension.toml" ] && echo 1)"'")) if on]
+sys.exit(0 if all(any(i.startswith(p) for i in ids) for p in need) else 1)' && break
   sleep 1
 done
-cz tool list --workspace scratch --agent factory-gatekeeper -o json | EXT_ON=$([ -f "$EXT/extension.toml" ] && echo 1) json '
+cz tool list --workspace scratch --agent factory-gatekeeper -o json |
+  EXT_ON=$([ -f "$EXT/extension.toml" ] && echo 1) NR_ON=$([ -f "$NR/extension.toml" ] && echo 1) json '
 import os
 pol = {t["descriptor"]["tool_id"]: t["decision"]["agent_policy_result"] for t in d["tools"]}
 want = ["compozy__session_prompt", "compozy__monitor_create", "compozy__notify", "compozy__terminal_exec",
@@ -156,6 +173,10 @@ deny = []
 if os.environ.get("EXT_ON"):
     want += ["ext__github_app_review__merge_gate", "ext__github_app_review__upsert_promotion"]
     deny = ["ext__github_app_review__submit_review", "ext__github_app_review__pr_context"]
+if os.environ.get("NR_ON"):
+    nr = sorted(t for t in pol if t.startswith("ext__newrelic__"))
+    assert nr, "newrelic installed but no ext__newrelic__ tool registered"
+    want += nr
 for tool in want + deny:
     print(f"factory-gatekeeper {tool}: {pol.get(tool)}")
 assert all(pol.get(t) == "allowed" for t in want), want

@@ -144,7 +144,7 @@ def test_watcher_carries_one_contest_rereview_per_head():  # US-005, BR-3
         assert refusal in watcher, refusal
 
 
-GATEKEEPER_TOOLS = ["compozy__*", "mcp__atlassian__*", "ext__newrelic__*",
+GATEKEEPER_TOOLS = ["compozy__*", "ext__newrelic__*",
                     "ext__github_app_review__merge_gate", "ext__github_app_review__upsert_promotion"]
 
 
@@ -190,3 +190,20 @@ def test_watcher_counts_one_round_per_app_review_and_unblocks_approved_threads()
     contest = watcher.split("## Contest")[1].split("## Grammar")[0]
     assert "at least 10 hex characters" in contest
     assert "answer `contesting: #<pr> <head-sha>` again, no round" in contest
+
+
+def test_reviewer_ignores_conventions_changed_by_the_pr_it_reviews():  # review-final G-1, G-13
+    text = agent_text("factory-reviewer")
+    step = next(line for line in text.splitlines() if line.startswith("2. **Conventions.**"))
+    assert "`pr_context.files` contains `REVIEW.md` or `.compozy/factory/factory.toml`" in step
+    assert "do not read or apply `REVIEW.md`" in step and "add a `major` finding" in step
+    assert text.index("1. **Context.**") < text.index("2. **Conventions.**"), "files are known before REVIEW.md is read"
+    assert "every `renamed` one exists" in text
+
+
+def test_gatekeeper_handles_every_upsert_promotion_failure():  # review-final G-8, G-10
+    text = agent_text("factory-gatekeeper")
+    assert "Cause `config_invalid`" in text and "do not retry" in text
+    assert 'Any other cause (`rate_limited`' in text and '`kind: "timer"`' in text and "after 15 min" in text
+    assert "mcp__atlassian" not in text and "Atlassian MCP" not in text
+    assert "Jira goes through the `twg jira workitem ...` CLI" in text
