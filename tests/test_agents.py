@@ -207,3 +207,20 @@ def test_gatekeeper_handles_every_upsert_promotion_failure():  # review-final G-
     assert 'Any other cause (`rate_limited`' in text and '`kind: "timer"`' in text and "after 15 min" in text
     assert "mcp__atlassian" not in text and "Atlassian MCP" not in text
     assert "Jira goes through the `twg jira workitem ...` CLI" in text
+
+
+def test_convention_change_finding_survives_contest_and_blocks():  # review-final G-15, G-17
+    reviewer = agent_text("factory-reviewer").split("## Re-review")[1].split("## Errors")[0]
+    assert "The step-2 convention/configuration finding is never dropped or lowered on re-review" in reviewer
+    contest = agent_text("factory-pr-watcher").split("## Contest")[1].split("## Grammar")[0]
+    assert "refused: contest #<pr> convention change needs the operator" in contest
+    assert "`blocked: #<pr> convention change needs operator` to `agent: factory-dispatcher`" in contest
+    assert "a rereview that settled as `rereview_not_eligible` posted none and does not count" in contest
+
+
+def test_approved_unresolved_threads_rearm_a_timer_and_promotion_retries_notify_once():  # review-final G-16, G-18
+    watcher = agent_text("factory-pr-watcher")
+    line = next(l for l in watcher.splitlines() if l.lstrip().startswith("- `changes_requested`, `unresolved_threads`"))
+    assert "5 min `kind: timer`" in line and "count no round" in line
+    gatekeeper = agent_text("factory-gatekeeper")
+    assert "once per cause" in gatekeeper and "retrying silently" in gatekeeper

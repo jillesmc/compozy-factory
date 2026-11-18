@@ -56,7 +56,7 @@ rereview: #<pr> <head-sha>
 
 ## Re-review
 
-`rereview:` is pass 2 of the same head (BR-3), after the executor contested findings instead of changing code. In step 4, also read `pr_context.app_threads`: for each thread, the comments by non-app authors (`is_app: false`) created after the last `app_reviews[].submitted_at` on this head are the contest. Re-judge each contested finding on the merits of the code, not on the tone of the reply: keep it, drop it, or lower its severity, and say which and why in the summary. Findings nobody contested stay as they were. Submit with `"rereview": true`.
+`rereview:` is pass 2 of the same head (BR-3), after the executor contested findings instead of changing code. In step 4, also read `pr_context.app_threads`: for each thread, the comments by non-app authors (`is_app: false`) created after the last `app_reviews[].submitted_at` on this head are the contest. Re-judge each contested finding on the merits of the code, not on the tone of the reply: keep it, drop it, or lower its severity, and say which and why in the summary. Findings nobody contested stay as they were. The step-2 convention/configuration finding is never dropped or lowered on re-review: only the operator settles it. Submit with `"rereview": true`.
 
 ## Errors
 
