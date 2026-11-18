@@ -72,7 +72,7 @@ def main():
 
     home = fl.compozy_home()
     agents_home, tools_home = home / "agents", home / "factory" / "tools"
-    order = {name: i for i, name in enumerate(fl.AGENTS)}
+    order = {name: i for i, name in enumerate(fl.AGENTS + fl.ON_DEMAND)}
     repo_agents = sorted((p for p in (fl.REPO_ROOT / "agents").glob("factory-*") if p.is_dir()),
                          key=lambda p: (order.get(p.name, len(order)), p.name))
     names = {p.name for p in repo_agents}

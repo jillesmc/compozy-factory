@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -10,11 +11,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AGENTS = ["factory-sentinel", "factory-scribe", "factory-dispatcher",
           "factory-pr-watcher", "factory-gatekeeper", "factory-auditor"]
+ON_DEMAND = ["factory-reviewer"]  # started per task by another agent; bin/attach never creates an instance
 # BR-5: keys every attached project must define, in the order they are reported.
 REQUIRED = [("language", "posts"), ("authorization", "authors"),
             ("repo", "github"), ("repo", "base"), ("repo", "release"), ("repo", "merge"),
             ("ci", "runner"), ("newrelic", "account_id"), ("newrelic", "app_name"),
-            ("jira", "site"), ("jira", "project"), ("jira", "fields"), ("jira", "defaults")]
+            ("jira", "site"), ("jira", "project"), ("jira", "fields"), ("jira", "defaults"),
+            ("review", "extension"), ("review", "repo"), ("review", "agent")]
 POSTS = ("pt-BR", "en")  # languages tools/factory_intake.py has text for
 
 
@@ -155,6 +158,16 @@ def load_factory_toml(root):
         refuse(f"{path} [newrelic] account_id must be a positive integer")
     if conf["repo"]["merge"] != "merge":
         refuse(f'{path} [repo] merge must be "merge"')
+    review = conf["review"]
+    for key in ("extension", "repo", "agent"):
+        if not isinstance(review[key], str) or not review[key].strip():
+            refuse(f"{path} [review] {key} must be a non-empty string")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", review["repo"]):
+        refuse(f'{path} [review] repo "{review["repo"]}" must be owner/name')
+    if review["repo"] != conf["repo"]["github"]:
+        refuse(f'{path} [review] repo must equal [repo] github "{conf["repo"]["github"]}"')
+    if review["agent"] not in ON_DEMAND:
+        refuse(f'{path} [review] agent must be one of: {", ".join(ON_DEMAND)}')
     posts = conf["language"]["posts"]
     if posts not in POSTS:
         refuse(f'{path} [language] posts "{posts}" not supported by factory_intake.py ({", ".join(POSTS)})')

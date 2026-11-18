@@ -22,6 +22,13 @@ base = "develop"          # delivery PRs target this branch
 release = "main"          # default branch; a merge here is a deploy
 merge = "merge"           # merge commit only; squash/rebase break the promotion train
 
+[review]
+# PR review by the GitHub App: the factory-pr-watcher starts one on-demand `agent` session per PR head,
+# which reviews through the `extension` tools. `repo` must equal [repo] github. Never list `agent` in [team].
+extension = "github-app-review"
+repo = "acme/acme-api"
+agent = "factory-reviewer"
+
 [ci]
 # Rule every changed workflow must follow (`runs-on:` value).
 runner = "self-hosted-${{ github.run_id }}"

@@ -5,7 +5,8 @@ Usage: bin/attach <workspace> [--agents a,b]
 
 <workspace> is a CompozyOS workspace name, ID or path. Refuses before any CompozyOS call when
 <root>/.compozy/factory/factory.toml is missing or lacks a required key. Agents come from
-factory.toml [team] agents (default: all six) unless --agents narrows them. An agent whose
+factory.toml [team] agents (default: all six) unless --agents narrows them. On-demand agents
+(factory-reviewer) are never attached: they are reported `skipped <agent> (on-demand)`. An agent whose
 source script is not approved is refused with the approve command; the others still attach.
 """
 import argparse
@@ -30,6 +31,9 @@ def main():
     existing = {i["agent_name"] for i in listed.get("instances", []) if i.get("state") != "archived"}
     refused = False
     for agent in agents:
+        if agent in fl.ON_DEMAND:
+            print(f"skipped {agent} (on-demand)")
+            continue
         if agent in existing:
             print(f"exists {agent}")
             continue

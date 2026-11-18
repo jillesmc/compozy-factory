@@ -1,6 +1,6 @@
 # compozy-factory
 
-The factory's always-on CompozyOS agents, defined once and installed at user level. A project joins
+The factory's CompozyOS agents (always-on, plus the on-demand reviewer), defined once and installed at user level. A project joins
 by adding `.compozy/factory/factory.toml` and attaching; every project value (repo, branches, Jira,
 CI runner rule, New Relic app, executor runtime, authors, post language) comes from that file.
 
@@ -12,6 +12,11 @@ CI runner rule, New Relic app, executor runtime, authors, post language) comes f
 | `factory-pr-watcher` | Follows executor PRs until ready |
 | `factory-gatekeeper` | Merges, promotion PR, deploy, Jira Done |
 | `factory-auditor` | Post-deploy verdict in New Relic |
+| `factory-reviewer` | On demand, one session per PR head: reviews the code and posts through the `github-app-review` extension. Never attached |
+
+The reviewer needs the `github-app-review` extension, the `claude-reviewer` provider overlays
+(`config.toml`, see the extension's `docs/reviewer-sandbox.md`), `factory.toml [review]` and a
+`REVIEW.md` at the project root.
 
 ## Golden path
 
@@ -31,8 +36,8 @@ Update: `git pull && bin/install && bin/reload <ws>`.
 | Command | Does |
 | --- | --- |
 | `bin/install [--dry-run] [--prune]` | Copies `agents/factory-*` to `$COMPOZY_HOME/agents/` and `tools/` (minus tests) to `$COMPOZY_HOME/factory/tools/`. Prints `installed`/`updated`/`unchanged`/`stale`/`pruned` per agent and the approval commands, with the daemon's hashes, for changed source scripts and authority blocks. Refuses symlinked targets before writing. |
-| `bin/attach <ws> [--agents a,b]` | Validates `factory.toml`, then creates one instance per `[team] agents`; `exists` when already attached; refuses an agent whose source script is unapproved. |
-| `bin/reload <ws> [agent…]` | Archives and recreates instances so they load the current definition. |
+| `bin/attach <ws> [--agents a,b]` | Validates `factory.toml`, then creates one instance per `[team] agents`; `exists` when already attached; `skipped <agent> (on-demand)` for the reviewer; refuses an agent whose source script is unapproved. |
+| `bin/reload <ws> [agent…]` | Archives and recreates instances so they load the current definition; skips on-demand agents. |
 | `bin/migrate-memory --workspace <ws> --map old=new[,…] [--append]` | Copies old agent memory to the new name with a `Migrated from …` first line; never deletes the old memory. |
 
 Python 3.11+ stdlib only. Agents call shared tools at `~/.compozy/factory/tools/<tool>`.

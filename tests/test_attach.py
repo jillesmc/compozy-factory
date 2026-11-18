@@ -123,3 +123,40 @@ def test_omitted_team_means_all_six(fake, workspace):
     toml.write_text(text[:text.index("[team]")] + text[text.index("[repo]"):])
     assert run("attach", str(workspace), env=fake.env()).returncode == 0
     assert [c[3] for c in fake.calls if c[:3] == ["agent", "instance", "create"]] == fl.AGENTS
+
+
+def test_attach_and_reload_never_create_the_on_demand_reviewer(fake, workspace):
+    toml = workspace / ".compozy" / "factory" / "factory.toml"
+    toml.write_text(toml.read_text().replace('"factory-auditor"]', '"factory-auditor", "factory-reviewer"]', 1))
+    proc = run("attach", str(workspace), env=fake.env())
+    assert proc.returncode == 0 and "skipped factory-reviewer (on-demand)" in proc.stdout.splitlines()
+    proc = run("attach", str(workspace), "--agents", "factory-reviewer", env=fake.env())
+    assert (proc.returncode, proc.stdout.strip()) == (0, "skipped factory-reviewer (on-demand)")
+    proc = run("reload", str(workspace), "factory-reviewer", env=fake.env())
+    assert (proc.returncode, proc.stdout.strip()) == (0, "skipped factory-reviewer (on-demand)")
+    touched = [c[3] for c in fake.calls if c[:2] == ["agent", "instance"] and len(c) > 3 and c[2] != "list"]
+    assert touched == fl.AGENTS
+
+
+REVIEW_BLOCK = 'extension = "github-app-review"\nrepo = "acme/acme-api"\nagent = "factory-reviewer"\n'
+REVIEW_INVALID = [  # (replacement for the example [review] block, refusal tail); None renames the table
+    (None, "missing [review] extension"),
+    ('extension = "github-app-review"\nagent = "factory-reviewer"\n', "missing [review] repo"),
+    ('extension = "github-app-review"\nrepo = "acme/acme-api"\n', "missing [review] agent"),
+    ('extension = ["x"]\nrepo = "acme/acme-api"\nagent = "factory-reviewer"\n', "[review] extension must be a non-empty string"),
+    ('extension = "github-app-review"\nrepo = "acme-api"\nagent = "factory-reviewer"\n', '[review] repo "acme-api" must be owner/name'),
+    ('extension = "github-app-review"\nrepo = "acme/other"\nagent = "factory-reviewer"\n', '[review] repo must equal [repo] github "acme/acme-api"'),
+    ('extension = "github-app-review"\nrepo = "acme/acme-api"\nagent = "factory-scribe"\n', "[review] agent must be one of: factory-reviewer"),
+]
+
+
+def test_attach_refuses_invalid_review_block_with_zero_cli_calls(fake, workspace):
+    toml = workspace / ".compozy" / "factory" / "factory.toml"
+    original = toml.read_text()
+    assert REVIEW_BLOCK in original
+    for new, tail in REVIEW_INVALID:
+        text = original.replace("[review]\n", "[x]\n") if new is None else original.replace(REVIEW_BLOCK, new)
+        toml.write_text(text)
+        proc = run("attach", str(workspace), env=fake.env())
+        assert (proc.returncode, proc.stdout.strip()) == (1, f"refused: {toml} {tail}"), (new, proc.stdout)
+    assert fake.calls == []

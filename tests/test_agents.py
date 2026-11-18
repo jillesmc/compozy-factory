@@ -16,7 +16,9 @@ IDENTITY = {  # _dx.md › Agent identities
     "factory-pr-watcher": ("Factory PR Watcher", "Follows executor PRs until they are green and reviewed, returns failures and findings to the executor, and hands ready heads to the gatekeeper."),
     "factory-gatekeeper": ("Factory Gatekeeper", "Revalidates ready PRs, merges them into the base branch, maintains the promotion PR to the release branch, and closes the Jira item after deploy."),
     "factory-auditor": ("Factory Auditor", "One window after deploy, checks in New Relic whether a closed factory issue's problem is gone; records the evidence on the issue and in Jira and reopens what came back."),
+    "factory-reviewer": ("Factory Reviewer", "Reviews one factory PR head and posts the review through the GitHub App. Reads code only; never runs it."),
 }
+REVIEW_TOOLS = ["ext__github_app_review__pr_context", "ext__github_app_review__submit_review"]
 DENYLIST = ["acme-reports", "acme-portal", "1234567", "ACME-", "acme",
             "codebuild-acme", "`staging`", "`production`"]
 OLD_NAMES = re.compile(r"\b([Ss]entinela|[Ee]scriv[aã]o|[Mm]aestro|vigia-pr|[Pp]orteiro)\b|(?<!factory-)\bauditor\b")
@@ -46,7 +48,7 @@ def test_ut_020_installed_files_carry_no_project_literals(home):
 
 
 def test_ut_021_identity_accepts_and_peer_names():
-    assert sorted(p.name for p in (REPO / "agents").iterdir()) == sorted(fl.AGENTS)
+    assert sorted(p.name for p in (REPO / "agents").iterdir()) == sorted(fl.AGENTS + fl.ON_DEMAND)
     for name, (display, description) in IDENTITY.items():
         text = agent_text(name)
         assert fl.frontmatter_field(text, "name") == name
@@ -79,6 +81,19 @@ def test_prompts_read_factory_toml_and_refuse_on_missing_keys():
     assert "--{repo.merge}" not in gatekeeper and gatekeeper.count("--merge --admin") == 3
     assert 'refused: factory.toml [repo] merge must be "merge"' in gatekeeper
     assert set(fl.POSTS) == set(fi.TEXT), "attach and factory_intake.py support the same post languages"
+    reviewer = agent_text("factory-reviewer")  # its grammar has no refused:, the missing config is a failed: code
+    assert ".compozy/factory/factory.toml" in reviewer and "failed: #<pr> factory_toml_missing" in reviewer
+    assert "{review.repo}" in reviewer and "{language.posts}" in reviewer
+
+
+def test_reviewer_is_on_demand_with_only_the_review_tools():
+    text = agent_text("factory-reviewer")
+    assert fl.frontmatter_field(text, "kind") == "on_demand"
+    assert (fl.frontmatter_field(text, "provider"), fl.frontmatter_field(text, "model")) == ("claude-reviewer", "claude-opus-5-5")
+    assert "fallback_chain:\n  - provider: claude-reviewer-fallback\n    model: claude-opus-5-5\npermissions:" in text
+    assert fl.frontmatter_field(text, "tools") == REVIEW_TOOLS
+    for name in fl.AGENTS:
+        assert fl.frontmatter_field(agent_text(name), "kind") == "always_on", name
 
 
 def run_source(path, cwd, stdin="{}"):

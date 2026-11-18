@@ -53,13 +53,13 @@ json 'assert d["port"] == '"$PORT"', d; print("daemon.json port", d["port"], "pi
 step "IT-001 install"
 iso "$REPO/bin/install" | tee "$T/install.out"
 for _ in $(seq 1 30); do  # the daemon discovers new definitions asynchronously
-  [ "$(cz agent list -o json | json 'print(sum(a["name"].startswith("factory-") for a in d))')" = 6 ] && break
+  [ "$(cz agent list -o json | json 'print(sum(a["name"].startswith("factory-") for a in d))')" = 7 ] && break
   sleep 1
 done
 cz agent list -o json | json '
 f = sorted((a["name"], a["origin"]) for a in d if a["name"].startswith("factory-"))
 print("\n".join(f"{n} origin={o}" for n, o in f))
-assert len(f) == 6 and all(o == "global" for _, o in f), f'
+assert len(f) == 7 and all(o == "global" for _, o in f), f'
 cz workspace add "$SCRATCH" --name scratch -o json | json 'print("workspace", d["name"], d["id"])'
 python3 - "$T/install.out" > "$T/approvals" <<'EOF'
 import sys

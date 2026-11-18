@@ -5,14 +5,14 @@ from pathlib import Path
 import factorylib as fl
 from conftest import run
 
-AGENTS = fl.AGENTS
+AGENTS = fl.AGENTS + fl.ON_DEMAND  # install copies every factory-* dir, on-demand ones included
 
 
 def snapshot(root):
     return {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in sorted(Path(root).rglob("*")) if p.is_file()}
 
 
-def test_ut_001_clean_home_gets_six_agents_and_tools(repo, home):
+def test_ut_001_clean_home_gets_every_agent_and_tools(repo, home):
     proc = run("install", env={"COMPOZY_HOME": str(home)}, repo_root=repo)
     assert proc.returncode == 0, proc.stderr
     assert sorted(p.name for p in (home / "agents").iterdir()) == sorted(AGENTS)
@@ -21,7 +21,7 @@ def test_ut_001_clean_home_gets_six_agents_and_tools(repo, home):
         assert not (home / "agents" / agent).is_symlink()
     assert (home / "factory" / "tools" / "factory_intake.py").is_file()
     assert not (home / "factory" / "tools" / "test_factory_intake.py").exists(), "tests are not installed"
-    assert proc.stdout.splitlines()[:7] == [f"installed {a}" for a in AGENTS] + ["installed tools (factory_intake.py)"]
+    assert proc.stdout.splitlines()[:len(AGENTS) + 1] == [f"installed {a}" for a in AGENTS] + ["installed tools (factory_intake.py)"]
     assert os.access(home / "agents" / "factory-dispatcher" / "sources" / "deliver", os.X_OK)
 
 

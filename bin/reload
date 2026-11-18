@@ -3,6 +3,8 @@
 
 Usage: bin/reload <workspace> [agent...]   # no agent = factory.toml [team] agents (default: all six)
 
+On-demand agents (factory-reviewer) have no instance and are skipped.
+
 `clear-main` is not enough: it keeps the same session id and the provider recorded in it.
 Agent memory and approvals (script/authority) belong to the agent definition and stay.
 """
@@ -27,6 +29,9 @@ def main():
     args = parser.parse_args()
     ws = args.workspace
     for agent in args.agents or default_agents(ws):
+        if agent in fl.ON_DEMAND:
+            print(f"skipped {agent} (on-demand)")
+            continue
         print(f"== {agent}")
         try:
             fl.compozy("agent", "instance", "archive", agent, "--workspace", ws)
