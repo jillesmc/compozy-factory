@@ -89,8 +89,8 @@ def test_prompts_read_factory_toml_and_refuse_on_missing_keys():
 def test_reviewer_is_on_demand_with_only_the_review_tools():
     text = agent_text("factory-reviewer")
     assert fl.frontmatter_field(text, "kind") == "on_demand"
-    assert (fl.frontmatter_field(text, "provider"), fl.frontmatter_field(text, "model")) == ("claude-reviewer", "claude-opus-5-5")
-    assert "fallback_chain:\n  - provider: claude-reviewer-fallback\n    model: claude-opus-5-5\npermissions:" in text
+    assert (fl.frontmatter_field(text, "provider"), fl.frontmatter_field(text, "model")) == ("claude-reviewer", "opus")
+    assert "fallback_chain:\n  - provider: claude-reviewer-fallback\n    model: opus\npermissions:" in text
     assert fl.frontmatter_field(text, "tools") == REVIEW_TOOLS
     for name in fl.AGENTS:
         assert fl.frontmatter_field(agent_text(name), "kind") == "always_on", name

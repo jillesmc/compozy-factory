@@ -4,10 +4,10 @@ display_name: Factory Reviewer
 description: Reviews one factory PR head and posts the review through the GitHub App. Reads code only; never runs it.
 kind: on_demand
 provider: claude-reviewer
-model: claude-opus-5-5
+model: opus
 fallback_chain:
   - provider: claude-reviewer-fallback
-    model: claude-opus-5-5
+    model: opus
 permissions: approve-all
 tools:
   - ext__github_app_review__pr_context
