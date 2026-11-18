@@ -34,8 +34,7 @@ agent = "factory-reviewer"
 runner = "self-hosted-${{ github.run_id }}"
 
 [deploy]
-aws_profile = "my-prod-profile"   # optional: AWS profile that sees the *-<release> CodePipeline pipelines
-aws_region = "us-east-1"           # optional: region of those pipelines
+environment = "production"   # optional: GitHub Deployments environment of the release; default [repo] release
 
 [newrelic]
 account_id = 1234567           # account of every NRQL the agents run; set the same as NEW_RELIC_ACCOUNT_ID for sources

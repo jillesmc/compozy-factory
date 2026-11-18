@@ -236,7 +236,11 @@ def test_e2e_001_dispatch_and_review_launch_guards():  # E2E-001 findings, 2026-
     assert "`gh pr update-branch <n> --repo {repo.github}` yourself (no executor round; once per head)" in watcher
 
 
-def test_gatekeeper_follows_the_deploy_in_the_configured_aws_account():  # E2E-003, 2026-11-18
+def test_gatekeeper_follows_the_deploy_through_github_deployments():  # E2E-003, 2026-11-18
     text = agent_text("factory-gatekeeper")
-    assert "`[deploy] aws_profile` and `[deploy] aws_region` are optional" in text
-    assert "--profile {deploy.aws_profile} --region {deploy.aws_region}" in text
+    step = text[text.index("3. **Follow the deploy"):text.index("4. Deploy ok:")]
+    assert "deployments?sha=<merge-sha>&environment=<env>" in step
+    assert "Never query the deploy platform itself" in step
+    assert "aws " not in step and "codepipeline" not in step.lower(), "the deploy is read from GitHub only"
+    for outcome in ("`success`", "`failure` or `error`", "no Deployment for the merge commit after 15 min"):
+        assert outcome in step
