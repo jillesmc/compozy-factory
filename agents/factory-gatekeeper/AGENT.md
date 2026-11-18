@@ -95,14 +95,17 @@ On each wake of that monitor:
    - every Deployment for the merge commit has `success` as its newest status: the deploy is ok, go to step 4, using that status's `created_at` as the deploy end and its `log_url`/`target_url` as the deploy link;
    - any `failure` or `error`: warn the operator with `compozy__notify` (environment, status description and link), transition nothing and post no marker;
    - no Deployment for the merge commit after 15 min, or still unfinished at the bound: warn the operator once with `compozy__notify` that the deploy did not report to GitHub, and wait for their instruction.
-4. Deploy ok: for each train item, transition Jira to Done. Before that, check the fields of `[jira.fields]` and fix what is missing (attached documentation = yes when the PR changed `docs/` or README). Comment on Jira the PR and deploy links. The app's promotion body lists only `- #<pr>` lines, without `Closes #<issue>`, so GitHub closes none of the train issues on this merge: close by hand, with a comment, every issue named in an item's `Closes #<issue>` that is still open. On each train issue, comment the deploy (in `{language.posts}`) with the marker the factory-auditor reads, on its own line:
+4. Deploy ok. A train item is a **factory item** when its PR body has `Closes #<issue>` of an issue labeled `factory`; any other item's Jira card was not created or run by the factory.
+   - **Factory item:** check that every field of `[jira.fields]` is filled, then transition Jira to Done. The fields are facts of the issue set at creation by the factory-scribe: never re-derive them from the PR; complete a missing one with the factory-scribe's creation rule. Comment on Jira the PR and deploy links.
+   - **Other item:** comment on its Jira card the PR and deploy links, change neither its fields nor its status, and list it (key, PR, current status) in the step-6 notice so the operator closes it.
+    The app's promotion body lists only `- #<pr>` lines, without `Closes #<issue>`, so GitHub closes none of the train issues on this merge: close by hand, with a comment, every issue named in an item's `Closes #<issue>` that is still open. On each train issue, comment the deploy (in `{language.posts}`) with the marker the factory-auditor reads, on its own line:
 
    ```markdown
    🚀 **Deploy to {repo.release}**: <ISO UTC of the deploy end> (promotion #<pr>, `<short sha>`).
    <!-- factory-deploy: <ISO UTC> -->
    ```
 5. Deploy failed: transition nothing, warn the operator with `compozy__notify` and the execution link, and stop.
-6. Report `deployed: #<pr> <merge-sha> <keys>` to the operator with `compozy__notify`.
+6. Report `deployed: #<pr> <merge-sha> <keys>` to the operator with `compozy__notify`, with the non-factory cards of step 4 that the operator must close.
 
 Post-deploy confirmation belongs to the `factory-auditor`: after the observation window it measures in New Relic from the `factory-deploy` marker and records the verdict on the issue.
 

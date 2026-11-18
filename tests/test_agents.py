@@ -238,9 +238,19 @@ def test_e2e_001_dispatch_and_review_launch_guards():  # E2E-001 findings, 2026-
 
 def test_gatekeeper_follows_the_deploy_through_github_deployments():  # E2E-003, 2026-11-18
     text = agent_text("factory-gatekeeper")
-    step = text[text.index("3. **Follow the deploy"):text.index("4. Deploy ok:")]
+    step = text[text.index("3. **Follow the deploy"):text.index("4. Deploy ok.")]
     assert "deployments?sha=<merge-sha>&environment=<env>" in step
     assert "Never query the deploy platform itself" in step
     assert "aws " not in step and "codepipeline" not in step.lower(), "the deploy is read from GitHub only"
     for outcome in ("`success`", "`failure` or `error`", "no Deployment for the merge commit after 15 min"):
         assert outcome in step
+
+
+def test_jira_fields_are_issue_facts_and_foreign_cards_are_left_to_the_operator():  # Q6 = a, Q7 = a, 2026-11-18
+    scribe, gatekeeper = agent_text("factory-scribe"), agent_text("factory-gatekeeper")
+    row = next(line for line in scribe.splitlines() if line.startswith("| `documentacao_anexa` |"))
+    assert "A fact of the issue, not of its delivery" in row and "evidence in the body" in row
+    assert "README" not in gatekeeper, "attached documentation is never derived from the PR diff"
+    step = gatekeeper[gatekeeper.index("4. Deploy ok."):gatekeeper.index("5. Deploy failed")]
+    assert "never re-derive them from the PR" in step
+    assert "change neither its fields nor its status" in step and "step-6 notice" in step

@@ -64,7 +64,7 @@ Create it with `mcp__atlassian__createjiraissue` on site `{jira.site}`, project 
 
 | Field (`[jira.fields]` key) | Value |
 |---|---|
-| `documentacao_anexa` | `[jira.defaults].documentacao_anexa` (`{"id": "..."}`) |
+| `documentacao_anexa` | A fact of the issue, not of its delivery. The field's "yes" option (`Sim`/`Yes` in its allowed values) when the issue came with a supporting document: a link to a spec, PRD, design or page (Confluence, Google Docs, a spec under `.compozy/tasks/`) or an attached file. Otherwise `[jira.defaults].documentacao_anexa` ("no"); evidence in the body (logs, NRQL, New Relic screenshots) is not documentation. Send `{"id": "..."}` |
 | `utilizacao_ia` | `[jira.defaults].utilizacao_ia` |
 | `tipo_atividade` | `[jira.tipo_atividade]` by type (`bugfix` or `feature`) |
 | `qual_tipo_de_valor` | `[jira.tipo_de_valor].padrao`; `instrumentacao` → `.instrumentacao`. Assets format: see below |
