@@ -9,7 +9,7 @@ CI runner rule, New Relic app, executor runtime, authors, post language) comes f
 | `factory-sentinel` | Classifies New Relic signals and proposes issues |
 | `factory-scribe` | Deduplicated GitHub issues and Jira work items |
 | `factory-dispatcher` | Accepts `factory:deliver` issues and dispatches executors |
-| `factory-pr-watcher` | Follows executor PRs, starts a `factory-reviewer` per green head, sends `ready:` only when `merge_gate` is ready |
+| `factory-pr-watcher` | Follows executor PRs, starts a `factory-reviewer` per green head and one re-review per contested head, sends `ready:` only when `merge_gate` is ready |
 | `factory-gatekeeper` | Merges only on `merge_gate` ready (no bypass), promotion PR, deploy, Jira Done |
 | `factory-auditor` | Post-deploy verdict in New Relic |
 | `factory-reviewer` | On demand, one session per PR head: reviews the code and posts through the `github-app-review` extension. Never attached |

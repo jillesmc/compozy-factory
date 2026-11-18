@@ -132,3 +132,13 @@ def test_watcher_reviews_each_head_and_gates_ready_on_merge_gate():  # US-004, U
     assert gate in gatekeeper and "`[review] repo`" in gatekeeper
     assert "refused #<pr>: merge_gate <reasons comma-separated>" in gatekeeper
     assert gatekeeper.index("merge_gate") < gatekeeper.index("## Merge into the base branch")
+
+
+def test_watcher_carries_one_contest_rereview_per_head():  # US-005, BR-3
+    watcher = agent_text("factory-pr-watcher")
+    assert "contest: #<pr> <head-sha>" in fl.frontmatter_field(watcher, "accepts")
+    assert "exactly `rereview: #<pr> <full-head-sha>`" in watcher and "`rereview-<pr>-<sha12>-a<attempt>`" in watcher
+    assert "contesting: #<pr> <head-sha>" in watcher.split("## Grammar")[1]
+    for refusal in ("refused: contest only from the executor of #<pr>", "refused: contest #<pr> <head-sha> is not the head",
+                    "refused: contest #<pr> already re-reviewed", "rereview_not_eligible"):
+        assert refusal in watcher, refusal
