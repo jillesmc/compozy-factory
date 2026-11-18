@@ -78,7 +78,7 @@ def test_prompts_read_factory_toml_and_refuse_on_missing_keys():
     for name in ("factory-sentinel", "factory-auditor"):  # C-1: the account is pinned on every NRQL call
         assert "`[newrelic] account_id`" in agent_text(name) and "account `{newrelic.account_id}`" in agent_text(name)
     gatekeeper = agent_text("factory-gatekeeper")  # C-2: merge commit only
-    assert "--{repo.merge}" not in gatekeeper and gatekeeper.count("--merge --admin") == 3
+    assert "--{repo.merge}" not in gatekeeper and gatekeeper.count("--merge --match-head-commit") == 3
     assert 'refused: factory.toml [repo] merge must be "merge"' in gatekeeper
     assert set(fl.POSTS) == set(fi.TEXT), "attach and factory_intake.py support the same post languages"
     reviewer = agent_text("factory-reviewer")  # its grammar has no refused:, the missing config is a failed: code
@@ -111,3 +111,24 @@ def test_sources_read_only_new_keys(tmp_path):
     (conf / "factory.toml").write_text("[language]\nposts = 'en'\n")
     proc = run_source(REPO / "agents" / "factory-auditor" / "sources" / "due", tmp_path)
     assert proc.returncode == 1 and "refused: factory.toml missing [repo] github" in proc.stderr
+
+
+def test_ut_047_no_admin_bypass_in_any_agent():  # US-006.AC-3, BR-9, Safety Invariant 5
+    hits = [str(p.relative_to(REPO)) for p in (REPO / "agents").rglob("*")
+            if p.is_file() and "__pycache__" not in p.parts and "--admin" in p.read_text(errors="replace")]
+    assert hits == []
+
+
+def test_watcher_reviews_each_head_and_gates_ready_on_merge_gate():  # US-004, US-006
+    watcher = agent_text("factory-pr-watcher")
+    gate = '`ext__github_app_review__merge_gate` with `{"repo":"{review.repo}","number":<n>,"kind":"delivery"}`'
+    assert gate in watcher and "`[review] repo`, `[review] agent`" in watcher
+    assert "exactly `review: #<pr> <full-head-sha>`" in watcher and "`agent: {review.agent}`" in watcher
+    assert "`compozy__worktree_create`" in watcher and "timeout_seconds: 1800" in watcher
+    assert "`review-<pr>-<sha12>-a<attempt>`" in watcher and "review-<pr>-<sha12>`" not in watcher  # retries get new keys
+    assert watcher.index("merge_gate") < watcher.index("exactly `ready: #<pr> <full-head-sha>`")
+    assert fl.frontmatter_field(watcher, "tools") is None  # an allowlist would cut its other tools
+    gatekeeper = agent_text("factory-gatekeeper")
+    assert gate in gatekeeper and "`[review] repo`" in gatekeeper
+    assert "refused #<pr>: merge_gate <reasons comma-separated>" in gatekeeper
+    assert gatekeeper.index("merge_gate") < gatekeeper.index("## Merge into the base branch")
