@@ -33,6 +33,10 @@ agent = "factory-reviewer"
 # Rule every changed workflow must follow (`runs-on:` value).
 runner = "self-hosted-${{ github.run_id }}"
 
+[deploy]
+aws_profile = "my-prod-profile"   # optional: AWS profile that sees the *-<release> CodePipeline pipelines
+aws_region = "us-east-1"           # optional: region of those pipelines
+
 [newrelic]
 account_id = 1234567           # account of every NRQL the agents run; set the same as NEW_RELIC_ACCOUNT_ID for sources
 app_name = "acme-api-prod"     # also set as NEW_RELIC_APP for the workspace (sources)

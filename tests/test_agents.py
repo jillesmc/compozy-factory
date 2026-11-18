@@ -234,3 +234,9 @@ def test_e2e_001_dispatch_and_review_launch_guards():  # E2E-001 findings, 2026-
     assert fetch < create, "the executor branch starts from a freshly fetched base"
     assert "never `compozy__session_spawn`" in watcher, "a spawned reviewer has no workspace paths and is refused"
     assert "`gh pr update-branch <n> --repo {repo.github}` yourself (no executor round; once per head)" in watcher
+
+
+def test_gatekeeper_follows_the_deploy_in_the_configured_aws_account():  # E2E-003, 2026-11-18
+    text = agent_text("factory-gatekeeper")
+    assert "`[deploy] aws_profile` and `[deploy] aws_region` are optional" in text
+    assert "--profile {deploy.aws_profile} --region {deploy.aws_region}" in text
