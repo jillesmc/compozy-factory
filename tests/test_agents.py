@@ -123,7 +123,7 @@ def test_watcher_reviews_each_head_and_gates_ready_on_merge_gate():  # US-004, U
     watcher = agent_text("factory-pr-watcher")
     gate = '`ext__github_app_review__merge_gate` with `{"repo":"{review.repo}","number":<n>,"kind":"delivery"}`'
     assert gate in watcher and "`[review] repo`, `[review] agent`" in watcher
-    assert "exactly `review: #<pr> <full-head-sha>`" in watcher and "`agent: {review.agent}`" in watcher
+    assert "exactly `review: {review.repo}#<pr> <full-head-sha>`" in watcher and "`agent: {review.agent}`" in watcher
     assert "`compozy__worktree_create`" in watcher and "timeout_seconds: 1800" in watcher
     assert "`review-<pr>-<sha12>-a<attempt>`" in watcher and "review-<pr>-<sha12>`" not in watcher  # retries get new keys
     assert watcher.index("merge_gate") < watcher.index("exactly `ready: #<pr> <full-head-sha>`")
@@ -137,7 +137,7 @@ def test_watcher_reviews_each_head_and_gates_ready_on_merge_gate():  # US-004, U
 def test_watcher_carries_one_contest_rereview_per_head():  # US-005, BR-3
     watcher = agent_text("factory-pr-watcher")
     assert "contest: #<pr> <head-sha>" in fl.frontmatter_field(watcher, "accepts")
-    assert "exactly `rereview: #<pr> <full-head-sha>`" in watcher and "`rereview-<pr>-<sha12>-a<attempt>`" in watcher
+    assert "exactly `rereview: {review.repo}#<pr> <full-head-sha>`" in watcher and "`rereview-<pr>-<sha12>-a<attempt>`" in watcher
     assert "contesting: #<pr> <head-sha>" in watcher.split("## Grammar")[1]
     for refusal in ("refused: contest only from the executor of #<pr>", "refused: contest #<pr> <head-sha> is not the head",
                     "refused: contest #<pr> already re-reviewed", "rereview_not_eligible"):
@@ -196,8 +196,10 @@ def test_reviewer_ignores_conventions_changed_by_the_pr_it_reviews():  # review-
     text = agent_text("factory-reviewer")
     step = next(line for line in text.splitlines() if line.startswith("2. **Conventions.**"))
     assert "`pr_context.files` contains `REVIEW.md` or `.compozy/factory/factory.toml`" in step
-    assert "do not read or apply `REVIEW.md`" in step and "add a `major` finding" in step
-    assert text.index("1. **Context.**") < text.index("2. **Conventions.**"), "files are known before REVIEW.md is read"
+    assert "still judge it by the base rules" in step and "add a `major` finding" in step
+    assert "Never read `REVIEW.md` or `factory.toml` from the worktree" in step
+    assert "`pr_context.conventions`" in text, "rules come from the base branch, never the PR head"
+    assert text.index("1. **Context.**") < text.index("2. **Conventions.**"), "conventions are known before they are applied"
     assert "every `renamed` one exists" in text
 
 
@@ -224,3 +226,11 @@ def test_approved_unresolved_threads_rearm_a_timer_and_promotion_retries_notify_
     assert "5 min `kind: timer`" in line and "count no round" in line
     gatekeeper = agent_text("factory-gatekeeper")
     assert "once per cause" in gatekeeper and "retrying silently" in gatekeeper
+
+
+def test_e2e_001_dispatch_and_review_launch_guards():  # E2E-001 findings, 2026-11-18
+    dispatcher, watcher = agent_text("factory-dispatcher"), agent_text("factory-pr-watcher")
+    fetch, create = dispatcher.index("git fetch origin {repo.base}"), dispatcher.index("compozy__worktree_create`: name = entry ID")
+    assert fetch < create, "the executor branch starts from a freshly fetched base"
+    assert "never `compozy__session_spawn`" in watcher, "a spawned reviewer has no workspace paths and is refused"
+    assert "`gh pr update-branch <n> --repo {repo.github}` yourself (no executor round; once per head)" in watcher

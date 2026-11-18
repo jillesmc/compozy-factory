@@ -45,6 +45,7 @@ One PR per message. Refuse any other form with `refused: expected watch: #<pr> <
    - body has `Jira: {jira.project}-<n>` and `Closes #<issue>`, and the verification section cites real commands or runs, never just "N/A";
    - every commit follows `<type>({jira.project}-<n>): <description>`, and **no commit message contains `close[sd]?`, `fix(es|ed)?` or `resolve[sd]?` followed by `#<number>`** (a closing keyword in a commit closes the issue when it reaches `{repo.release}`);
    - changed workflows use `runs-on: {ci.runner}`, never a hosted runner.
+   - **Behind the base:** when `mergeStateStatus` is `BEHIND`, or the head does not contain the current `origin/{repo.base}` and the merge is blocked, run `gh pr update-branch <n> --repo {repo.github}` yourself (no executor round; once per head). The new head restarts verification and gets a fresh review. A conflict is not this case: it goes to the executor (step 4).
 4. **Return** to the executor with `compozy__session_prompt`, queue mode, a short message with the evidence (check name and URL, finding link, conflict, hygiene item), when:
    - a check failed on the head;
    - there is an open thread or a new bot finding on the head;
@@ -61,8 +62,8 @@ One PR per message. Refuse any other form with `refused: expected watch: #<pr> <
    2. Otherwise dispatch **one** `{review.agent}` session for this head. Dedupe through a memory pointer `#<pr> review <head-sha> a<attempt> <session-id>` (attempt starts at 1): with a pointer for this head and a reviewer still running, wait for its wake. Before a new attempt, the previous attempt's worktree must already be removed (step 5.4). To dispatch:
       - `git fetch origin <full-head-sha>` if the commit is not local (the PR head is on `origin`);
       - `compozy__worktree_create` in this workspace, name `review-<pr>-<sha12>-a<attempt>` (the first 12 characters of the head), `base_ref` = the full head SHA. It is a managed worktree outside the sandbox, never the main checkout. Creation is asynchronous: wait until `compozy__worktree_inspect` reports it ready;
-      - `compozy__session_create` with `agent: {review.agent}` bound to that worktree, with no runtime override (the agent definition owns provider, model and fallback);
-      - first `compozy__session_prompt` exactly `review: #<pr> <full-head-sha>`, `idempotency_key` `review-<pr>-<sha12>-a<attempt>`;
+      - `compozy__session_create` with `agent: {review.agent}` bound to that worktree (never `compozy__session_spawn`: a spawned worker gets no workspace paths and a narrowed tool set, and its launch is refused), with no runtime override (the agent definition owns provider, model and fallback);
+      - first `compozy__session_prompt` exactly `review: {review.repo}#<pr> <full-head-sha>`, `idempotency_key` `review-<pr>-<sha12>-a<attempt>`;
       - store the pointer and register `compozy__monitor_create kind: session` on that session with `timeout_seconds: 1800`.
    3. On the reviewer wake, read its final line from `compozy__session_history`:
       - `reviewed: … APPROVE`: go to **Ready**;
@@ -91,7 +92,7 @@ One PR per message. Refuse any other form with `refused: expected watch: #<pr> <
 4. A live `#<pr> rereview <head-sha> …` pointer (re-review running or a retry pending): a repeated contest; answer `contesting: #<pr> <head-sha>` again, no round, nothing else. A `pass` 2 review on the head in `app_reviews` (a rereview that settled as `rereview_not_eligible` posted none and does not count): `refused: contest #<pr> already re-reviewed`, and treat the PR as needing a code change: return to the executor as in step 4 (one round).
 5. `pr_context.files` contains `REVIEW.md` or `.compozy/factory/factory.toml`: the reviewer's convention/configuration finding blocks until the operator reviews the change, and no re-review clears it. Answer `refused: contest #<pr> convention change needs the operator`, warn the operator with `compozy__notify`, send `blocked: #<pr> convention change needs operator` to `agent: factory-dispatcher`, settle any reviewer (step 5.4) and stop watching the PR, as for any `blocked:`.
 
-Then dispatch exactly as step 5.2, with pointer `#<pr> rereview <head-sha> a<attempt> <session-id>`, worktree name and `idempotency_key` `rereview-<pr>-<sha12>-a<attempt>`, and first prompt exactly `rereview: #<pr> <full-head-sha>`. Answer the executor `contesting: #<pr> <head-sha>`. One re-review per head.
+Then dispatch exactly as step 5.2, with pointer `#<pr> rereview <head-sha> a<attempt> <session-id>`, worktree name and `idempotency_key` `rereview-<pr>-<sha12>-a<attempt>`, and first prompt exactly `rereview: {review.repo}#<pr> <full-head-sha>`. Answer the executor `contesting: #<pr> <head-sha>`. One re-review per head.
 
 On the reviewer wake, read its final line from `compozy__session_history`:
 
