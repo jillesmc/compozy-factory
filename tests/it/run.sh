@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# IT-001..IT-003 against a real, isolated CompozyOS daemon.
+# IT-001..IT-004 against a real, isolated CompozyOS daemon.
 #
 # Starts a throwaway daemon with its own COMPOZY_HOME, HTTP port and socket, runs the real
-# bin/install, bin/attach and bin/migrate-memory against it, and stops it on exit. Every CLI call
+# bin/install, bin/attach and bin/migrate-memory against it, checks the gatekeeper's tool allowlist, and stops it on exit. Every CLI call
 # runs under `env -i` so the caller's COMPOZY_* session identity can never reach the operator daemon.
 # Usage: tests/it/run.sh            (KEEP=1 keeps the temp dir for inspection)
 set -euo pipefail
@@ -43,6 +43,9 @@ harness = "acp"
 command = "npx -y @agentclientprotocol/claude-agent-acp@latest"
 runtime_provider = "claude"
 auth_mode = "native_cli"
+
+[tools.policy]
+trusted_sources = ["extension:github-app-review"]
 EOF
 
 step "isolated daemon (COMPOZY_HOME=$HOME_DIR, port $PORT)"
@@ -124,4 +127,41 @@ cz agent memory inspect vigia-pr --workspace scratch -o json | json 'assert "#22
 echo "re-run without --append:"
 iso "$REPO/bin/migrate-memory" --workspace scratch --map vigia-pr=factory-pr-watcher || echo "exit $?"
 
-step "IT-001..IT-003 passed"
+step "IT-004 gatekeeper tool allowlist (agent policy)"
+# The installed github-app-review package is only read as an install source; dummy secrets let it
+# register its tools in this home. No tool is invoked.
+EXT=${GHAR_EXT:-$HOME/.compozy/extensions/github-app-review}
+if [ -f "$EXT/extension.toml" ]; then
+  cz extension install "$EXT" --allow-unverified --yes >/dev/null
+  for kv in GITHUB_APP_BASE=develop GITHUB_APP_ID=1 GITHUB_APP_INSTALLATION_ID=1 GITHUB_APP_PRIVATE_KEY=dummy \
+            "GITHUB_APP_PROMOTION=acme/acme-api:develop->main" GITHUB_APP_PROMOTION_APPROVERS=octocat GITHUB_APP_REPOS=acme/acme-api; do
+    printf '%s' "${kv#*=}" | cz extension secrets set github-app-review --env "${kv%%=*}" --value-stdin >/dev/null
+  done
+  cz extension enable github-app-review >/dev/null
+  echo "github-app-review installed from $EXT (dummy secrets)"
+else
+  echo "github-app-review not found at $EXT: checking native tools only"
+fi
+for _ in $(seq 1 30); do  # extension tools register asynchronously
+  [ ! -f "$EXT/extension.toml" ] && break
+  cz tool info ext__github_app_review__upsert_promotion --workspace scratch -o json >/dev/null 2>&1 && break
+  sleep 1
+done
+cz tool list --workspace scratch --agent factory-gatekeeper -o json | EXT_ON=$([ -f "$EXT/extension.toml" ] && echo 1) json '
+import os
+pol = {t["descriptor"]["tool_id"]: t["decision"]["agent_policy_result"] for t in d["tools"]}
+want = ["compozy__session_prompt", "compozy__monitor_create", "compozy__notify", "compozy__terminal_exec",
+        "compozy__session_status", "compozy__worktree_remove"]
+deny = []
+if os.environ.get("EXT_ON"):
+    want += ["ext__github_app_review__merge_gate", "ext__github_app_review__upsert_promotion"]
+    deny = ["ext__github_app_review__submit_review", "ext__github_app_review__pr_context"]
+for tool in want + deny:
+    print(f"factory-gatekeeper {tool}: {pol.get(tool)}")
+assert all(pol.get(t) == "allowed" for t in want), want
+assert all(pol.get(t) == "denied" for t in deny), deny
+natives = [t for t in pol if t.startswith("compozy__")]
+assert natives and all(pol[t] == "allowed" for t in natives), "compozy__* must allow every native tool"
+print(f"all {len(natives)} compozy__* native tools allowed")'
+
+step "IT-001..IT-004 passed"

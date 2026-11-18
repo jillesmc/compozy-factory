@@ -14,7 +14,7 @@ IDENTITY = {  # _dx.md › Agent identities
     "factory-scribe": ("Factory Scribe", "Turns findings and reports into deduplicated GitHub issues and, when the item is actionable, into the official Jira work item with the required fields."),
     "factory-dispatcher": ("Factory Dispatcher", "Accepts issues released with `factory:deliver`, sizes them, dispatches implementation to an isolated worktree and hands the PR to the PR watcher."),
     "factory-pr-watcher": ("Factory PR Watcher", "Follows executor PRs until they are green and reviewed, returns failures and findings to the executor, and hands ready heads to the gatekeeper."),
-    "factory-gatekeeper": ("Factory Gatekeeper", "Revalidates ready PRs, merges them into the base branch, maintains the promotion PR to the release branch, and closes the Jira item after deploy."),
+    "factory-gatekeeper": ("Factory Gatekeeper", "Revalidates ready PRs, merges them into the base branch, has the GitHub App open the promotion PR, merges it once the operator approves it on GitHub, and closes the Jira item after deploy."),
     "factory-auditor": ("Factory Auditor", "One window after deploy, checks in New Relic whether a closed factory issue's problem is gone; records the evidence on the issue and in Jira and reopens what came back."),
     "factory-reviewer": ("Factory Reviewer", "Reviews one factory PR head and posts the review through the GitHub App. Reads code only; never runs it."),
 }
@@ -142,3 +142,29 @@ def test_watcher_carries_one_contest_rereview_per_head():  # US-005, BR-3
     for refusal in ("refused: contest only from the executor of #<pr>", "refused: contest #<pr> <head-sha> is not the head",
                     "refused: contest #<pr> already re-reviewed", "rereview_not_eligible"):
         assert refusal in watcher, refusal
+
+
+GATEKEEPER_TOOLS = ["compozy__*", "mcp__atlassian__*", "ext__newrelic__*",
+                    "ext__github_app_review__merge_gate", "ext__github_app_review__upsert_promotion"]
+
+
+def test_gatekeeper_tool_allowlist_and_submit_review_only_for_the_reviewer():  # Config Lifecycle: tools: grants writes
+    assert fl.frontmatter_field(agent_text("factory-gatekeeper"), "tools") == GATEKEEPER_TOOLS
+    listing = [n for n in fl.AGENTS + fl.ON_DEMAND
+               if "ext__github_app_review__submit_review" in (fl.frontmatter_field(agent_text(n), "tools") or [])]
+    assert listing == ["factory-reviewer"]
+    upserting = [n for n in fl.AGENTS + fl.ON_DEMAND
+                 if "ext__github_app_review__upsert_promotion" in (fl.frontmatter_field(agent_text(n), "tools") or [])]
+    assert upserting == ["factory-gatekeeper"]
+
+
+def test_gatekeeper_promotes_through_the_app_and_deploys_on_github_approval():  # US-007, BR-8, ADR-003
+    text = agent_text("factory-gatekeeper")
+    assert "aprovado" not in text, "approval is the operator's GitHub review, never a message"
+    assert fl.frontmatter_field(text, "accepts") == ["ready: #<pr> <head-sha>"]
+    assert '`ext__github_app_review__upsert_promotion` with `{"repo":"{review.repo}"}`' in text
+    assert '{"repo":"{review.repo}","number":<number>,"kind":"promotion"}' in text
+    assert "--merge --match-head-commit <head_sha>" in text
+    assert "`promotion_conflict`" in text and "`promotion_not_approved`" in text
+    assert "gh pr create" not in text and "gh pr edit" not in text, "the app owns the promotion PR"
+    assert "factory-deploy:" in text and "close by hand" in text
