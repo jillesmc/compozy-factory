@@ -168,3 +168,25 @@ def test_gatekeeper_promotes_through_the_app_and_deploys_on_github_approval():  
     assert "`promotion_conflict`" in text and "`promotion_not_approved`" in text
     assert "gh pr create" not in text and "gh pr edit" not in text, "the app owns the promotion PR"
     assert "factory-deploy:" in text and "close by hand" in text
+
+
+def test_watcher_review_retries_wake_on_a_timer_and_settle_reviewers():  # review-final G-2, G-5, G-6, G-14
+    watcher = agent_text("factory-pr-watcher")
+    assert "PR open and not draft" in watcher
+    assert "`compozy__monitor_create kind: timer` of 5 min" in watcher and "pending `review` or `rereview` attempt" in watcher
+    assert "`not_mergeable`, `history_incomplete`" in watcher and "5 min `kind: timer`" in watcher
+    assert "`blocked: #<pr> review <code>`" in watcher and "`compozy__notify`" in watcher
+    for code in ("credential_absent", "repo_not_installed", "config_invalid", "pr_not_reviewable", "factory_toml_missing"):
+        assert code in watcher.split("**any other `failed: <code>`**")[1].split("\n")[0], code
+    assert "`delete_branch: true`, `force: true`" in watcher and "`compozy__worktree_inspect`" in watcher
+    assert watcher.count("settle any reviewer (step 5.4)") >= 3  # cap, merged, closed
+    assert "Reviewer dispatch is exempt" in watcher.split("## Messages between agents")[1]
+
+
+def test_watcher_counts_one_round_per_app_review_and_unblocks_approved_threads():  # review-final G-3, G-4, G-7, G-12
+    watcher = agent_text("factory-pr-watcher")
+    assert "**one** return and **one** round, whichever wake sees them first" in watcher
+    assert "resolve each thread once fixed" in watcher and "they do not block" in watcher
+    contest = watcher.split("## Contest")[1].split("## Grammar")[0]
+    assert "at least 10 hex characters" in contest
+    assert "answer `contesting: #<pr> <head-sha>` again, no round" in contest
