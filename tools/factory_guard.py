@@ -19,6 +19,7 @@ from pathlib import Path
 
 REVIEWER = "factory-reviewer"
 ROLES = ("signals", "code", "work", "review", "deploy")
+MANAGED_SKILL_INFO = "managed sessions can run only compozy skill expose"  # the CLI's refusal inside a managed session
 
 
 class Refused(Exception):
@@ -229,7 +230,14 @@ def adapter(role, provider, workspace, home=None):
     name, installed = resolve(root, role, provider, project_conf(root), home)
     check_skill(name, installed, home)
     want = home / "skills" / name
-    info = compozy("skill", "info", name, "--workspace", str(workspace))
+    try:
+        info = compozy("skill", "info", name, "--workspace", str(workspace))
+    except RuntimeError as exc:
+        if MANAGED_SKILL_INFO not in str(exc):
+            raise
+        # A managed session may not run `compozy skill info`: the agent checks the winning source and path itself.
+        return (f"skill {name} path {want / 'SKILL.md'} "
+                f"(verify with compozy__skill_view: source user, path {want / 'SKILL.md'})")
     path = Path(info.get("path") or "")
     if info.get("source") != "user" or (path != want and path != want / "SKILL.md"):
         raise Refused(f"skill {name} resolves to {info.get('source')} {path}, not the installed user skill {want}")

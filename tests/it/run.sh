@@ -321,6 +321,21 @@ installed_c=$(python3 -c "import json; print(next(b['installed'] for b in json.l
 (cd "$WSC" && iso env STUB_TRACE="$T/trace.jsonl" python3 "$installed_c/ops.py" issue_comment 7 "hello")
 json 'print("provider effect recorded:", d)' < "$T/trace.jsonl"
 
+step "IT-009 (managed session) the adapter guard inside a real agent session hands the source check to compozy__skill_view"
+# The scribe's main session runs tests/it/fake-acp, which runs the guard with the session's own environment:
+# there `compozy skill info` is refused (managed session), so the guard must still verify the installed tree
+# and print the path the agent then checks with compozy__skill_view.
+MAIN=$(cz agent instance list --workspace scratch -o json | json 'print(next(i["main_session_id"] for i in d["instances"] if i["agent_name"] == "factory-scribe"))')
+cz session prompt "$MAIN" "IT-RUN $T/managed.out python3 $HOME_DIR/factory/tools/factory_guard.py adapter code github $SCRATCH" >/dev/null
+for _ in $(seq 1 60); do [ -f "$T/managed.out" ] && break; sleep 1; done
+cat "$T/managed.out"
+want="$HOME_DIR/skills/factory-code-github/SKILL.md"
+[ "$(cat "$T/managed.out")" = "rc=0
+ok: skill factory-code-github path $want (verify with compozy__skill_view: source user, path $want)" ] || {
+  echo "guard in a managed session did not hand the check to compozy__skill_view"; exit 1; }
+iso python3 "$HOME_DIR/factory/tools/factory_guard.py" adapter code github "$SCRATCH" | tee "$T/plain.out"
+grep -qx "ok: skill factory-code-github path $want" "$T/plain.out"  # an operator shell still asks the daemon
+
 step "factory-roles IT-001 bin/migrate-config on a copy of an old factory.toml, then bin/attach --dry-run"
 # MIGRATE_SOURCE=<path> runs it on a copy of the operator's file (default: the old-grammar fixture). git runs
 # against a local bare origin with an isolated git config; gh is a fake; the policy home is under $T.

@@ -594,6 +594,33 @@ def test_fr_ut_070_repository_skill_shadowing_the_adapter_is_refused(fake, works
         1, f"refused: skill factory-work-jira resolves to workspace {shadow}, not the installed user skill {want}")
 
 
+MANAGED = ("error: cli: managed sessions can run only compozy skill expose and compozy skill unexpose; use canonical "
+           "compozy__skill_list, compozy__skill_search, or compozy__skill_view for read-only requests; skill create, "
+           "enable, and disable require an operator shell")
+
+
+def test_fr_adapter_guard_in_a_managed_session_hands_the_source_check_to_skill_view(fake, workspace, installed, home):
+    fake.load()
+    fake.state["skill_info_error"] = MANAGED
+    fake.save()
+    path = home / "skills" / "factory-work-jira" / "SKILL.md"
+    proc = guard("adapter", "work", "jira", str(workspace), env=installed)
+    assert (proc.returncode, proc.stdout.strip()) == (
+        0, f"ok: skill factory-work-jira path {path} (verify with compozy__skill_view: source user, path {path})")
+    path.write_text(path.read_text() + "\nextra\n")  # the skill bytes still must be the verified tree's
+    proc = guard("adapter", "work", "jira", str(workspace), env=installed)
+    assert proc.returncode == 1 and proc.stdout.startswith(f"refused: skill {path} differs")
+    (home / "factory" / "adapters" / "deploy-github-deployments" / "SKILL.md").write_text("changed")
+    proc = guard("adapter", "deploy", "github-deployments", str(workspace), env=installed)
+    assert proc.returncode == 1 and "tree" in proc.stdout and proc.stdout.rstrip().endswith("run bin/install")
+    fake.load()
+    fake.state["skill_info_error"] = "error: daemon unreachable"  # any other CLI error still refuses
+    fake.save()
+    proc = guard("adapter", "code", "github", str(workspace), env=installed)
+    assert proc.returncode == 1 and proc.stdout.startswith("refused: adapter check failed (compozy skill info")
+    assert "daemon unreachable" in proc.stdout
+
+
 def test_fr_adapter_guard_refuses_an_uninstalled_or_changed_bundled_adapter(fake, workspace, installed, home):
     (home / "factory" / "adapters" / "deploy-github-deployments" / "SKILL.md").write_text("changed")
     proc = guard("adapter", "deploy", "github-deployments", str(workspace), env=installed)
@@ -1015,6 +1042,8 @@ def test_fr_us_003_each_agent_loads_its_adapters_from_the_user_root():
         block = text.split("## Adapters")[1].split("\n## ")[0]
         assert 'python3 ~/.compozy/factory/tools/factory_guard.py adapter' in block, name
         assert "`compozy__skill_view`" in block and "source is `user` and its path is `<path>`" in block, name
+        assert "(verify with compozy__skill_view: source user, path <path>)" in block, name
+        assert "`skill.diagnostics[].winning_path` is `<path>`" in block, name
         assert "Never call a provider tool" in block, name
     roles = {"factory-sentinel": ["signals"], "factory-scribe": ["code", "work"], "factory-dispatcher": ["code", "work"],
              "factory-pr-watcher": ["code", "work", "review"], "factory-gatekeeper": ["code", "review", "work", "deploy"],

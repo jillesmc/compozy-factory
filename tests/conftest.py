@@ -85,6 +85,9 @@ if cmd == ["agent", "info", "factory-reviewer"]:
         sys.exit(1)
     out(info)
 if args[:2] == ["skill", "info"]:
+    if state.get("skill_info_error"):  # e.g. the CLI's refusal inside a managed session
+        print(state["skill_info_error"], file=sys.stderr)
+        sys.exit(1)
     name = args[2]
     out(state["skills"].get(name) or {"name": name, "source": "user",
                                       "path": os.path.join(os.environ["COMPOZY_HOME"], "skills", name)})

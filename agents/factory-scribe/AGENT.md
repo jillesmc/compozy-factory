@@ -31,8 +31,8 @@ Project values live in `.compozy/factory/factory.toml` at the workspace root (yo
 
 You act on a provider only through the operations of its role contract (`code.issue_create`, `work.create`, …); each operation is performed by following its `## <operation>` section in that role's adapter skill, never from memory. Your roles: `code`, `work`. At the start of every turn, for each of them:
 
-1. `python3 ~/.compozy/factory/tools/factory_guard.py adapter <role> <provider> "$PWD"` (provider from `[roles.<role>] provider`) prints `ok: skill <name> path <path>`. On `refused:`, reply with that line and act on nothing.
-2. Load the skill with `compozy__skill_view` (`name: <name>`) and use it only when the result's source is `user` and its path is `<path>`; otherwise reply `refused: adapter <role>/<provider> skill is not the installed user skill` and act on nothing (a repository skill of the same name takes precedence and is never trusted).
+1. `python3 ~/.compozy/factory/tools/factory_guard.py adapter <role> <provider> "$PWD"` (provider from `[roles.<role>] provider`) prints `ok: skill <name> path <path>`; inside a managed session, where the guard cannot ask the daemon which skill wins, the line ends with `(verify with compozy__skill_view: source user, path <path>)`. On `refused:`, reply with that line and act on nothing.
+2. Load the skill with `compozy__skill_view` (`name: <name>`) and use it only when the result's source is `user` and its path is `<path>` (exactly the path the guard printed): `skill.source` and `skill.diagnostics[].winning_source` are `user` and `skill.diagnostics[].winning_path` is `<path>`; otherwise reply `refused: adapter <role>/<provider> skill is not the installed user skill` and act on nothing (a repository skill of the same name takes precedence and is never trusted).
 
 Never call a provider tool or CLI except as an adapter section says. The work key is spelled by `work.key_format`: titles start with its `title_prefix`, `{key}` being the work key.
 

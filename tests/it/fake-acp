@@ -2,9 +2,13 @@
 """A fake ACP agent for tests/it/run.sh: JSON-RPC on stdio, replies "ok" to every prompt.
 
 No model and no credential: it lets the isolated daemon give the boundary prompt of bin/attach and
-bin/reload its turn without launching a real provider.
+bin/reload its turn without launching a real provider. A prompt `IT-RUN <out> <argv...>` runs argv in this
+managed session's own environment (as an agent's shell would) and writes its exit code and output to <out>.
 """
 import json
+import os
+import shlex
+import subprocess
 import sys
 
 MODELS = ["sonnet", "opus"]  # the factory agents' models
@@ -35,6 +39,14 @@ for line in sys.stdin:
     elif method == "session/set_config_option":
         result = {"configOptions": config(params.get("value", "sonnet"))}
     elif method == "session/prompt":
+        text = "".join(b.get("text", "") for b in params.get("prompt") or [] if isinstance(b, dict))
+        run = [line for line in text.splitlines() if line.startswith("IT-RUN ")]  # after any runtime prefix
+        if run:
+            out, *argv = shlex.split(run[-1][len("IT-RUN "):])
+            proc = subprocess.run(argv, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+            with open(out + ".tmp", "w") as f:
+                f.write(f"rc={proc.returncode}\n{proc.stdout}{proc.stderr}")
+            os.replace(out + ".tmp", out)
         send({"jsonrpc": "2.0", "method": "session/update", "params": {
             "sessionId": params.get("sessionId"),
             "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "ok"}}}})
