@@ -207,6 +207,18 @@ def test_fr_ut_008_every_adapter_has_one_section_per_contract_operation():
         assert ("key_format" in meta) == (role == "work")
 
 
+def test_fr_text_bodies_are_sent_from_a_file():
+    # 2026-11-19: `gh api … -f body=@-` posted the literal `@-` on issue #199 (-f is a raw string).
+    bad = re.compile(r"-f body=|body=@-|--body-file -|--(body|comment) ['\"](?!\$\(cat )")
+    docs = [*REPO.glob("skills/*/SKILL.md"), *REPO.glob("agents/*/AGENT.md"), REPO / "docs" / "conformance-walk.md"]
+    hits = [f"{p.relative_to(REPO)}:{n}: {line.strip()}" for p in docs
+            for n, line in enumerate(p.read_text().splitlines(), 1) if bad.search(line)]
+    assert hits == []
+    text = (REPO / "skills" / "factory-code-github" / "SKILL.md").read_text()
+    section = re.search(r"^## code\.issue_comment\n(.*?)^## ", text, re.M | re.S).group(1)
+    assert "-F body=@<file>" in section
+
+
 def test_fr_ut_049_matrix_operations_live_in_contracts():
     declared = {role: fl.contract_operations(role) for role in fl.ROLES}
     found = {op for ops in declared.values() for op in ops}

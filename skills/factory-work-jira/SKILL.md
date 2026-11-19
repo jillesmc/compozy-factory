@@ -44,7 +44,8 @@ by Jira without error and silently dropped.
 ## work.create
 
 Create in project `{project}` with `issuetype` from `[roles.work.jira.issuetype]` by `kind`, summary =
-the issue title without prefix, description = issue body + issue link, and **every** field of
+the issue title without prefix, description = issue body + issue link (written to a temp file and
+passed as `--description "$(cat <file>)" --description-format markdown`), and **every** field of
 `fields.py` at creation (the transitions require them). Read the card back with the field ids and
 repair any empty one (`work.fields_repair`). Return the key `{project}-<n>`; the caller retitles the
 issue with `work.key_format` and adds the body line `Jira: <key>`.
@@ -77,7 +78,10 @@ No such transition from the current status is `transition_unavailable`; a field 
 
 ## work.comment
 
-`twg jira workitem comment --id <KEY> --body '<markdown>'`.
+Write the markdown to a temp file, then
+`twg jira workitem comment create --issue-id <KEY> --body-format markdown --body "$(cat <file>)"`
+(`twg` has no body-file flag; the quoted `$(cat …)` passes the file unchanged). Never inline the
+markdown in `--body`.
 
 ## work.key_format
 

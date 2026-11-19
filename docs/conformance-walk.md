@@ -129,7 +129,7 @@ Create one throwaway issue in C3 and reuse it (`<t>`); C8 creates a second one (
   Effect: issues and PRs with `is_pr`. Undo: none.
 - **C2 `code.pr_search`** (row 7). `gh pr list --repo {repo} --state all --search '<a merged PR title word>' --limit 10 --json number,title,url,state`.
   Effect: includes a merged PR. Undo: none.
-- **C3 `code.issue_create`** (row 8) **OUTWARD**. `gh api -X POST repos/{repo}/issues --input -` with
+- **C3 `code.issue_create`** (row 8) **OUTWARD**. `gh api -X POST repos/{repo}/issues --input <file>` with
   `{"title": "[conformance-walk] code.issue_create", "body": "Throwaway issue of a conformance walk; closed by the walk.", "labels": ["conformance-walk"]}`
   (after C4, so the label exists). Effect: issue `#<t>` with label `conformance-walk`. Undo: close it
   as not planned at the end (C7 leaves it closed); deletion needs a repository admin
@@ -137,13 +137,14 @@ Create one throwaway issue in C3 and reuse it (`<t>`); C8 creates a second one (
 - **C4 `code.label_ensure`** (row 9) **OUTWARD**. `gh label create conformance-walk --repo {repo} --color ededed --description 'conformance walk throwaway' --force`,
   twice (idempotent). Effect: one label, same color. Undo: after the walk,
   `gh label delete conformance-walk --repo {repo} --yes`.
-- **C5 `code.issue_comment`** (row 10) **OUTWARD**. `gh api -X POST repos/{repo}/issues/<t>/comments -f body=@-`
-  with `conformance walk comment` on stdin. Effect: comment URL on `#<t>`. Undo:
+- **C5 `code.issue_comment`** (row 10) **OUTWARD**. Write `conformance walk comment` to a temp file, then
+  `gh api -X POST repos/{repo}/issues/<t>/comments -F body=@<file>`; check the comment text is that line,
+  not `@<file>`. Effect: comment URL on `#<t>`. Undo:
   `gh api -X DELETE repos/{repo}/issues/comments/<comment id>`.
 - **C6 `code.issue_edit`** (row 11) **OUTWARD**. `gh issue edit <t> --repo {repo} --title '[conformance-walk] edited'`.
   Effect: new title. Undo: none needed (throwaway).
-- **C7 `code.issue_reopen`** (row 12) **OUTWARD**. `gh issue close <t> --repo {repo} --reason "not planned" --comment 'conformance walk'`,
-  then `gh issue reopen <t> --repo {repo} --comment 'conformance walk reopen'`. Effect: `#<t>` open with
+- **C7 `code.issue_reopen`** (row 12) **OUTWARD**. Comment as in C5, then `gh issue close <t> --repo {repo} --reason "not planned"`;
+  comment again as in C5, then `gh issue reopen <t> --repo {repo}`. Effect: `#<t>` open with
   the comment. Undo: `gh issue close <t> --repo {repo} --reason "not planned"` at the end. (Also a
   `code.issue_close` line if E2E-001 did not cover it, row 13.)
 - **C8 `code.issue_link_child`** (row 15) **OUTWARD**. Create `#<t2>` as in C3, read its id with
@@ -152,7 +153,7 @@ Create one throwaway issue in C3 and reuse it (`<t>`); C8 creates a second one (
   `gh api -X DELETE repos/{repo}/issues/<t>/sub_issue -F sub_issue_id=<id>`; close `#<t2>` as not planned.
 - **C9 `code.pr_update_branch`** (row 18) **OUTWARD**, only if E2E-001 did not need it. Branch
   `conformance-walk/update-branch` from `{base}~1`, one commit adding `.conformance-walk` (no workflow,
-  no protected path), push, `gh pr create --draft --repo {repo} --base {base} --title '[conformance-walk] update branch' --body 'throwaway'`
+  no protected path), push, `gh pr create --draft --repo {repo} --base {base} --title '[conformance-walk] update branch' --body-file <file>` (the file holds `throwaway`)
   (no factory label; the dispatcher only delivers labeled issues). Then
   `gh pr update-branch <p> --repo {repo}` and re-read with `code.pr_get`. Effect: the PR head moved to a
   commit merging `{base}`. Undo: `gh pr close <p> --repo {repo} --delete-branch`.
@@ -177,7 +178,7 @@ All covered by E2E-001 when it starts without a work key. If not:
 - **J4 `work.transition`** (row 29) **OUTWARD**. `twg jira workitem transitions query --id <KEY>`, then
   `twg jira workitem transition --id <KEY> --transition-id <canceled id>`. Effect: status Canceled.
   Undo: none (canceled is the end state of a throwaway).
-- **J5 `work.comment`** (row 30) **OUTWARD**. `twg jira workitem comment --id <KEY> --body 'conformance walk'`.
+- **J5 `work.comment`** (row 30) **OUTWARD**. Write `conformance walk` to a temp file, then `twg jira workitem comment create --issue-id <KEY> --body-format markdown --body "$(cat <file>)"`.
   Undo: delete the comment in Jira.
 - **J6 `work.key_format`** (row 31). Read the frontmatter: title `WID-1: x`, branch `WID-1-x`. Undo: none.
 - **J7 `work.train_close`** (row 32) **OUTWARD**. Only with a real deploy; a non-factory item gets the
@@ -192,11 +193,11 @@ Run with a scratch workspace whose `factory.toml` sets `[roles.work] provider = 
 - **G1 `work.create`** (row 26). Returns `#<t>`; creates nothing. Effect: no second record.
 - **G2 `work.state`** (row 27). `code.issue_get` → `todo` (or `facts` missing without a facts block).
 - **G3 `work.fields_repair`** (row 28) **OUTWARD**. `python3 ~/.compozy/factory/tools/factory_envelope.py facts`
-  with the facts of J1, then `gh issue edit <t> --repo {repo} --body-file -` with the body plus the block.
+  with the facts of J1, then `gh issue edit <t> --repo {repo} --body-file <file>` with the body plus the block written to the file.
   Effect: the issue body holds `factory.facts/v1`. Undo: none (throwaway).
 - **G4 `work.transition`** (row 29) **OUTWARD**. `in_progress`:
   `gh issue edit <t> --repo {repo} --add-label factory:in-progress --remove-label factory:deliver --remove-label factory:blocked`;
-  then `canceled`: `gh issue close <t> --repo {repo} --reason "not planned" --comment 'conformance walk'`.
+  then `canceled`: a comment as in C5, then `gh issue close <t> --repo {repo} --reason "not planned"`.
   Effect: labels, then closed not planned. Undo: `gh issue edit <t> --repo {repo} --remove-label factory:in-progress`.
 - **G5 `work.comment`** (row 30) **OUTWARD**. As C5. Undo: delete the comment.
 - **G6 `work.key_format`** (row 31). Title `#194: x`, branch `194-x`, commit scope `#194`.
@@ -221,6 +222,18 @@ Run with a scratch workspace whose `factory.toml` sets `[roles.work] provider = 
   `compozy__terminal_exec`, `gh api 'repos/{repo}/deployments?sha=<merge-sha>&environment={environment}'`
   and `gh api repos/{repo}/deployments/<id>/statuses`; a bound of 1 minute. Effect: `success`,
   `finished_at` and `link` equal to the Deployment's newest status. Undo: none.
+
+## Findings
+
+- **2026-11-19, code/github `code.issue_comment`**: the section said
+  `gh api … /comments` with `-f` and `@-` as the body value (markdown on stdin). `-f` sends a raw string, so the
+  factory-auditor's comment on issue #199 was posted with the literal body `@-` (then PATCHed; the edit
+  history keeps it). Fixed in the commit that adds this entry: every body goes through a temp file
+  (`-F body=@<file>`, `--body-file <file>`, `--input <file>`; Jira `--body "$(cat <file>)"`), and
+  `tests/test_roles.py` scans every SKILL.md/AGENT.md (and this file) for a raw `-f` body, a stdin `@-` body and inline quoted `--body`/`--comment` text.
+  The adapter trees of code/github and work/jira changed: after `bin/install`, re-trace
+  `code.issue_comment` (C5, and C7 for reopen/close) and `work.comment` (J5) before
+  `bin/conformance-record`; a record from the old trace is stale.
 
 ## Finish
 
