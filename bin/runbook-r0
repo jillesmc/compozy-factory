@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""Record the prior complete set before an activation (docs/activation-runbook.md R0); read-only.
+
+Usage: bin/runbook-r0 <workspace> [--factory <checkout>] [--pr <n>] [--agent <name>] [--out <file>]
+                      [--source <extension>=github:<owner>/<repo>@<tag>]... [--compare <r0.json>]
+
+Records extension versions and provenance, the compozy-factory commit of the checkout bin/install ran
+from (default: this repository), the installed factory-* agents (daemon digest and file tree digest),
+the workspace HEAD, its factory.toml bytes at origin/<base> and in the checkout (a byte copy is saved
+next to the record as <out>.factory.toml), whether .compozy/newrelic.toml exists, the instances, the
+bound extension env NAMES (never values), and the smoke inputs: the open delivery PRs, the most recent
+merged one, and the merge_gate verdict of the open PR (--pr, default the newest open one; --agent <name>
+invokes it as that agent, e.g. factory-gatekeeper, when the daemon's tool policy needs an allowlist).
+Each extension also gets its rollback command: a published install (installed_from github) reinstalls from
+the tagged source github:<slug>@v<version>, pinned with --expected-digest to the recorded archive digest,
+which must equal the release's published .tar.gz.sha256 asset (read with gh; --source overrides the
+derived tag); a local-path install reinstalls from its path with --replace, pinned to checksum_sha256.
+An incomplete capture is refused (exit 1, no record): a part of the R0 set missing or empty, or a smoke
+read that failed. A missing open PR is not an error: the gate smoke is then skipped.
+Nothing is changed: no fetch, no write outside the record, no mutating call. The record must live outside
+the workspace and the factory checkout (default ~/.local/state/compozy-factory/r0-<workspace>-<UTC>.json).
+--compare <r0.json> captures again and prints `same`/`differs` for each part of the R0 set (extensions:
+version, source, package checksum and archive digest; factory commit; agents: daemon digest and file tree; factory.toml
+bytes at base and in the checkout; newrelic.toml absent); exit 1 when one differs.
+"""
+import argparse
+import datetime
+import hashlib
+import json
+import re
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import factorylib as fl  # noqa: E402
+
+EXTENSIONS = ("github-app-review", "newrelic")
+REL_TOML, REL_NR = ".compozy/factory/factory.toml", ".compozy/newrelic.toml"
+
+
+def run(*cmd, cwd=None):
+    proc = subprocess.run(cmd, cwd=cwd, capture_output=True)
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def sha(data):
+    return None if data is None else "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def repo_base(text):
+    """(owner/name, delivery base) from either grammar."""
+    conf = tomllib.loads(text)
+    code = conf.get("roles", {}).get("code", {}).get("github", {})
+    old = conf.get("repo", {})
+    repo, base = code.get("repo") or old.get("github"), code.get("base") or old.get("base")
+    if not (repo and base):
+        fl.refuse(f"{REL_TOML} names no repository and base ([repo] or [roles.code.github])")
+    return repo, base
+
+
+def try_compozy(*args):
+    try:
+        return fl.compozy(*args)
+    except RuntimeError as exc:
+        return {"error": str(exc)}
+
+
+def gh_json(*args):
+    out = run("gh", *args)
+    return json.loads(out) if out else {"error": f"gh {' '.join(args)} failed"}
+
+
+def release_digest(slug, tag):
+    """sha256 of the release archive from its published .tar.gz.sha256 asset (read-only gh call), or None."""
+    out = run("gh", "release", "download", tag, "-R", slug, "-p", "*.tar.gz.sha256", "-O", "-")
+    return out.split()[0].decode() if out and out.split() else None
+
+
+def rollback(name, ext, source=None, digest_of=release_digest):
+    """(command, problem) reinstalling this extension's R0 build, pinned; problem is None when usable."""
+    if ext.get("installed_from") == "local_path":
+        if not (ext.get("source_url") and ext.get("checksum_sha256")):
+            return None, f"extension {name}: local-path install without path or checksum"
+        return (f"compozy extension install {ext['source_url']} --replace --expected-digest {ext['checksum_sha256']} "
+                "--allow-unverified"), None
+    slug, version, archive = ext.get("slug"), ext.get("version"), ext.get("archive_digest_sha256")
+    if not source and ext.get("installed_from") == "github" and slug and version:
+        source = f"github:{slug}@v{version}"
+    hint = f"pass --source {name}=github:<owner>/<repo>@<tag> (the release this build came from)"
+    if not source:
+        return None, f"extension {name} installed from {ext.get('installed_from')} without a GitHub slug: {hint}"
+    m = re.fullmatch(r"github:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@(\S+)", source)
+    if not m:
+        return None, f"extension {name}: source {source} is not github:<owner>/<repo>@<tag>"
+    if not archive:
+        return None, f"extension {name}: no archive_digest_sha256 in its provenance to pin {source}"
+    published = digest_of(m[1], m[2])
+    if published != archive:
+        return None, (f"extension {name}: release {m[2]} of {m[1]} publishes archive sha256 {published}, the R0 "
+                      f"install has {archive}; {hint}")
+    return f"compozy extension install {source} --expected-digest {archive} --allow-unverified", None
+
+
+def capture(ws, factory, pr, agent=None, sources=None):
+    root = fl.workspace_root(ws)
+    toml_path = root / REL_TOML
+    if not toml_path.is_file():
+        fl.refuse(f"{toml_path} missing")
+    repo, base = repo_base(toml_path.read_text())
+    at_base = run("git", "-C", str(root), "show", f"origin/{base}:{REL_TOML}")
+
+    listed = try_compozy("extension", "list")
+    extensions = {}
+    for ext in listed if isinstance(listed, list) else []:
+        if ext.get("name") in EXTENSIONS:
+            prov = ext.get("provenance") or {}
+            secrets = try_compozy("extension", "secrets", "list", ext["name"])
+            extensions[ext["name"]] = {
+                "version": ext.get("version"), "state": ext.get("state"),
+                "installed_from": prov.get("installed_from"), "source_url": prov.get("source_url"),
+                "checksum_sha256": prov.get("checksum_sha256"), "slug": prov.get("slug"),
+                "archive_digest_sha256": prov.get("archive_digest_sha256"),
+                "bound_env_names": sorted(secrets.get("bound_env_keys") or [])}
+            command, problem = rollback(ext["name"], extensions[ext["name"]], (sources or {}).get(ext["name"]))
+            extensions[ext["name"]]["rollback"] = {"command": command, "problem": problem}
+
+    agents = {}
+    agents_home = fl.compozy_home() / "agents"
+    for path in sorted(agents_home.glob("factory-*")) if agents_home.is_dir() else []:
+        info = try_compozy("agent", "info", path.name)
+        try:
+            tree = fl.tree_digest(path)
+        except fl.Refused as exc:
+            tree = f"error: {exc}"
+        agents[path.name] = {"definition_digest": info.get("definition_digest"), "origin": info.get("origin"),
+                             "layer": info.get("layer"), "tree": tree}
+
+    instances = try_compozy("agent", "instance", "list", "--workspace", ws, "--limit", "100")
+    head = run("git", "-C", str(factory), "rev-parse", "HEAD")
+    dirty = run("git", "-C", str(factory), "status", "--porcelain")
+    open_prs = gh_json("pr", "list", "-R", repo, "--base", base, "--state", "open", "--limit", "20",
+                       "--json", "number,headRefOid,title")
+    merged = gh_json("pr", "list", "-R", repo, "--base", base, "--state", "merged", "--limit", "1",
+                     "--json", "number,mergeCommit,title")
+    if pr is None and isinstance(open_prs, list) and open_prs:
+        pr = max(p["number"] for p in open_prs)
+    gate = None
+    if pr is not None:
+        call = try_compozy("tool", "invoke", "ext__github_app_review__merge_gate", "--workspace", ws, "--input",
+                           json.dumps({"repo": repo, "number": pr, "kind": "delivery"}), *(["--agent", agent] if agent else []))
+        gate = {"number": pr, "verdict": (call.get("result") or {}).get("structured"), "error": call.get("error")}
+    return {
+        "captured_at": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "workspace": {"ref": ws, "root": str(root), "repo": repo, "base": base,
+                      "head": (run("git", "-C", str(root), "rev-parse", "HEAD") or b"").decode().strip() or None},
+        "factory_toml": {"at_base": sha(at_base), "checkout": sha(toml_path.read_bytes())},
+        "newrelic_toml_present": (root / REL_NR).exists(),
+        "extensions": extensions,
+        "factory": {"checkout": str(factory), "commit": (head or b"").decode().strip() or None,
+                    "dirty": bool(dirty and dirty.strip())},
+        "agents": agents,
+        "instances": [{"agent": i.get("agent_name"), "id": i.get("id"), "state": i.get("state")}
+                      for i in (instances.get("instances") or []) if i.get("state") != "archived"],
+        "smoke": {"open_delivery_prs": open_prs, "last_merged_delivery_pr": merged, "gate": gate},
+    }, at_base
+
+
+def r0_set(rec):
+    return {
+        "extensions": {n: {k: e.get(k) for k in ("version", "source_url", "checksum_sha256", "archive_digest_sha256")}
+                       for n, e in rec["extensions"].items()},
+        "factory commit": rec["factory"]["commit"],
+        "agents": {n: {"digest": a["definition_digest"], "tree": a["tree"]} for n, a in rec["agents"].items()},
+        "factory.toml at base": rec["factory_toml"]["at_base"],
+        "factory.toml in checkout": rec["factory_toml"]["checkout"],
+        "newrelic.toml absent": not rec["newrelic_toml_present"],
+    }
+
+
+def incomplete(rec):
+    """What makes a capture unusable as R0: a missing part of the R0 set or a failed smoke read."""
+    bad = [f"extension {n} not installed" for n in EXTENSIONS if n not in rec["extensions"]]
+    bad += [f"extension {n} {k} unknown" for n, e in rec["extensions"].items()
+            for k in ("version", "source_url", "checksum_sha256") if not e.get(k)]
+    bad += [e["rollback"]["problem"] for e in rec["extensions"].values() if e["rollback"]["problem"]]
+    bad += [f"agent {n} {k} unknown ({v})" for n, a in rec["agents"].items()
+            for k, v in (("digest", a["definition_digest"]), ("tree", a["tree"])) if not v or str(v).startswith("error")]
+    bad += ["no factory-* agent installed"] if not rec["agents"] else []
+    bad += ["factory commit unknown"] if not rec["factory"]["commit"] else []
+    bad += [f"factory.toml at origin/{rec['workspace']['base']} unreadable (git fetch origin first)"] \
+        if not rec["factory_toml"]["at_base"] else []
+    smoke = rec["smoke"]
+    bad += [f"smoke {k}: {v['error']}" for k, v in (("open delivery PRs", smoke["open_delivery_prs"]),
+                                                    ("last merged delivery PR", smoke["last_merged_delivery_pr"]))
+            if isinstance(v, dict) and v.get("error")]
+    gate = smoke["gate"]
+    if gate and (gate["error"] or gate["verdict"] is None):
+        bad.append(f"smoke gate #{gate['number']}: {gate['error'] or 'no verdict'} (try --agent factory-gatekeeper)")
+    return bad
+
+
+def inside(path, root):
+    return path == root or root in path.parents
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("workspace")
+    parser.add_argument("--factory", default=str(fl.REPO_ROOT), help="compozy-factory checkout bin/install ran from")
+    parser.add_argument("--pr", type=int, help="open delivery PR whose gate verdict R4 compares")
+    parser.add_argument("--agent", help="invoke merge_gate as this agent (e.g. factory-gatekeeper)")
+    parser.add_argument("--out", help="record file (outside the workspace and the factory checkout)")
+    parser.add_argument("--source", action="append", default=[], metavar="EXT=github:OWNER/REPO@TAG",
+                        help="reinstall source of an extension's R0 build (when its provenance has no GitHub slug)")
+    parser.add_argument("--compare", help="an earlier record: report whether the R0 set is restored")
+    args = parser.parse_args()
+    factory = Path(args.factory).expanduser().resolve()
+    sources = dict(s.split("=", 1) for s in args.source if "=" in s)
+    if len(sources) != len(args.source):
+        fl.refuse("--source takes <extension>=github:<owner>/<repo>@<tag>")
+    rec, at_base = capture(args.workspace, factory, args.pr, args.agent, sources)
+
+    if args.compare:
+        then, now = r0_set(json.loads(Path(args.compare).read_text())), r0_set(rec)
+        for part, value in then.items():
+            print(f"{'same' if now[part] == value else 'differs':<8} {part}"
+                  + ("" if now[part] == value else f": R0 {value} now {now[part]}"))
+        return 0 if then == now else 1
+
+    problems = incomplete(rec)
+    if problems:
+        fl.refuse("incomplete R0 capture, nothing recorded: " + "; ".join(problems))
+    stamp = rec["captured_at"].replace(":", "").replace("-", "")
+    out = Path(args.out or Path.home() / ".local/state/compozy-factory"
+               / f"r0-{Path(rec['workspace']['root']).name}-{stamp}.json").expanduser().resolve()
+    for root in (Path(rec["workspace"]["root"]).resolve(), factory):
+        if inside(out, root):
+            fl.refuse(f"the record must live outside {root}")
+    fl.write_json(out, rec)
+    copy = out.with_name(out.name + ".factory.toml")
+    if at_base is not None:
+        copy.write_bytes(at_base)
+    print(f"recorded   {out}")
+    print(f"workspace  {rec['workspace']['root']} HEAD {rec['workspace']['head']} ({rec['workspace']['repo']}, base "
+          f"{rec['workspace']['base']})")
+    print(f"factory    {rec['factory']['commit']}{' (dirty checkout)' if rec['factory']['dirty'] else ''}")
+    for name, ext in sorted(rec["extensions"].items()):
+        print(f"extension  {name} {ext['version']} ({ext['state']}; from {ext['source_url']}) "
+              f"env {', '.join(ext['bound_env_names'])}")
+        print(f"rollback   {ext['rollback']['command']}")
+    for name, agent in rec["agents"].items():
+        print(f"agent      {name} digest {fl.short(agent['definition_digest'])} tree {fl.short(agent['tree'])}")
+    print(f"toml       at origin/{rec['workspace']['base']} {fl.short(rec['factory_toml']['at_base'])}"
+          f" (copy {copy if at_base is not None else 'none'}); checkout {fl.short(rec['factory_toml']['checkout'])}")
+    print(f"newrelic   .compozy/newrelic.toml {'present' if rec['newrelic_toml_present'] else 'absent'}")
+    states = ", ".join(f"{i['agent']}={i['state']}" for i in rec["instances"])
+    print(f"instances  {states or 'none'}")
+    smoke = rec["smoke"]
+    merged = smoke["last_merged_delivery_pr"]
+    print(f"smoke      last merged delivery PR "
+          f"{'#' + str(merged[0]['number']) if isinstance(merged, list) and merged else merged}")
+    gate = smoke["gate"]
+    print(f"smoke      gate #{gate['number']} {json.dumps(gate['verdict'] or gate['error'])}" if gate
+          else "smoke      no open delivery PR (merge_gate smoke skipped)")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)

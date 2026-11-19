@@ -45,7 +45,9 @@ merged by the factory: the operator merges it outside the factory, then types
 (`external_merge_verified` → `continue_dispatched` → `post_merge_done`) in the work-log entry and the
 gatekeeper runs the post-merge steps once (`continue:` / `continuing:` / `post_merge_done:`).
 
-Migrating a project from the pre-roles grammar (one shot, on the operator's terminal):
+Migrating a running project from the pre-roles grammar is one atomic activation (agents paused, extensions,
+policy, agents and `factory.toml` switched together, rollback to the recorded prior set):
+[docs/activation-runbook.md](docs/activation-runbook.md). Its project steps (one shot, on the operator's terminal):
 
 ```console
 $ bin/migrate-config <ws>          # asks the promotion approvers, opens the migration PR, stages the policy
@@ -61,9 +63,10 @@ $ bin/stage-policy                 # stage a hand-edited policy working copy; pr
 | `bin/install-adapter <role> <path> --workspace <ws>` | Operator only (interactive terminal). Installs the custom adapter `factory.toml` points to at `$COMPOZY_HOME/factory/adapters/<role>-<provider>@<tree digest>/` with the user skill `factory-<role>-<provider>-<digest12>`, and binds it to (workspace root, role, provider) in `bindings.json`. Re-run after every change. |
 | `tools/factory_guard.py reviewer\|premerge\|adapter …` | Trusted reviewer check, pre-merge re-read of base and head, adapter skill resolution (installed tree, binding, user skill root). Exit 0 `ok:` / 1 `refused:`. |
 | `tools/factory_external.py …` | The dispatcher's only writer of the `merged_external` phases; prints the next action (`cleanup:`, `send: continue:`, `wait:`, `done:`). |
-| `bin/reload <ws> [agent…]` | Runs the reviewer guard (nothing is archived on refusal), then archives and recreates instances so they load the current definition, with one boundary prompt each; skips on-demand agents. |
+| `bin/reload <ws> [agent…] [--pause]` | Runs the reviewer guard (nothing is archived on refusal), then archives and recreates instances so they load the current definition, with one boundary prompt each; skips on-demand agents. `--pause` pauses each new instance right after creating it, before its boundary prompt (a new active instance is due for a check-in at once; activation runbook R3). |
 | `bin/migrate-config <ws> [--dry-run]` | One-shot conversion of a pre-roles `factory.toml` (lossless or refused) plus `.compozy/newrelic.toml`, committed on `factory/migrate-roles` from `origin/<base>` in a temporary worktree (the checkout is untouched), pushed, PR opened; asks the promotion approvers on a TTY (refuses otherwise, before any write), adds the repo's block to the github-app-review policy working copy and stages it through `bin/stage-policy`. Never reads a secret; activates nothing. `unchanged` on the role grammar. |
 | `bin/stage-policy` | Checks the github-app-review policy working copy against the extension's strict TOML subset and schema (a port of its parser) and writes the byte copy `policies/<sha256>.toml` (0444, never overwritten); prints the `secrets set` line. No extension or network call. |
+| `bin/runbook-r0 <ws> [--factory <checkout>] [--pr <n>] [--agent <name>] [--out <file>] [--source <ext>=github:<owner>/<repo>@<tag>] [--compare <r0.json>]` | Read-only R0 record of [docs/activation-runbook.md](docs/activation-runbook.md): extension versions, factory commit, installed agent digests, `factory.toml` bytes at `origin/<base>` (copy saved next to the record), `.compozy/newrelic.toml` presence, instances, bound env names (never values), the smoke PRs, the open PR's gate verdict, and each extension's pinned rollback command (published install: the `github:<slug>@v<version>` tag pinned to the archive digest, checked against the release's `.tar.gz.sha256`; local path: `--replace` pinned to the package checksum). Writes only the record, outside the workspace and the factory checkout. Refuses an incomplete capture (no record). `--agent` invokes the gate as that agent. `--compare` reports `same`/`differs` per part of the R0 set (extension version, source, checksum and archive digest; factory commit; agent digest and tree; both `factory.toml` hashes; `newrelic.toml` absent), exit 1 on a difference. |
 | `bin/migrate-memory --workspace <ws> --map old=new[,…] [--append]` | Copies old agent memory to the new name with a `Migrated from …` first line; never deletes the old memory. |
 
 Python 3.11+ stdlib only. Agents call shared tools at `~/.compozy/factory/tools/<tool>`.
@@ -81,6 +84,7 @@ conformance record and its trace; compiled Python in a tree is refused.
 ```console
 $ python3 -m pytest          # unit tests; CompozyOS is faked at the subprocess boundary
 $ tests/it/run.sh            # integration tests against a throwaway daemon (own COMPOZY_HOME, port, socket)
+$ tests/it/activation.sh     # IT-006 only: the activation runbook from the released extension builds (needs gh, bun)
 ```
 
 `tests/it/last-run.log` holds the latest IT evidence. Specs: `.compozy/tasks/factory-user-agents/`,

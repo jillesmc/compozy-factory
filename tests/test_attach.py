@@ -100,6 +100,21 @@ def test_reload_archives_and_recreates_each_agent(fake, workspace, installed):
         "boundary factory-auditor ok"]
 
 
+def test_reload_pause_pauses_each_new_instance_before_its_boundary_turn(fake, workspace, installed):  # S5 P-1
+    proc = run("reload", str(workspace), "factory-scribe", "factory-auditor", "--pause", env=installed)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    ops = [c[:4] for c in fake.calls if c[:3] in (["agent", "instance", "create"], ["agent", "instance", "pause"])
+           or c[:2] == ["session", "prompt"]]
+    assert ops == [["agent", "instance", "create", "factory-scribe"], ["agent", "instance", "pause", "ainst-factory-scribe"],
+                   ["session", "prompt", "sess-factory-scribe", fl.BOUNDARY],
+                   ["agent", "instance", "create", "factory-auditor"], ["agent", "instance", "pause", "ainst-factory-auditor"],
+                   ["session", "prompt", "sess-factory-auditor", fl.BOUNDARY]]
+    fake.load()
+    assert {i["agent_name"]: i["state"] for i in fake.state["instances"]} == {
+        "factory-scribe": "paused", "factory-auditor": "paused"}
+    assert "   paused factory-scribe" in proc.stdout.splitlines() and "boundary factory-auditor ok" in proc.stdout
+
+
 def boundary_prompts(fake):
     return [c[2] for c in fake.calls if c[:2] == ["session", "prompt"]]
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # IT-001..IT-004 (factory-user-agents), IT-007..IT-009 and IT-001 (factory-roles: bin/migrate-config, then
-# bin/attach --dry-run) against a real, isolated CompozyOS daemon.
+# bin/attach --dry-run) against a real, isolated CompozyOS daemon; then IT-006 (tests/it/activation.sh, the
+# activation runbook R0-R4 and rollback from the released extension builds) on a second isolated daemon.
 #
 # Starts a throwaway daemon with its own COMPOZY_HOME, HTTP port and socket, runs the real
 # bin/install, bin/attach and bin/migrate-memory against it, checks the gatekeeper's tool allowlist, and stops it on exit. Every CLI call
@@ -333,4 +334,7 @@ iso "$REPO/bin/reload" scratch factory-scribe | tee "$T/reload.out"
 grep -q '^reviewer factory-reviewer origin global layer user' "$T/reload.out"
 grep -q '^boundary factory-scribe ok$' "$T/reload.out"
 
-step "IT-001..IT-004, IT-007..IT-009 (factory-user-agents/factory-roles) and factory-roles IT-001 passed"
+step "factory-roles IT-006 activation runbook (tests/it/activation.sh: its own isolated daemon)"
+KEEP="${KEEP:-}" "$REPO/tests/it/activation.sh"
+
+step "IT-001..IT-004, IT-007..IT-009 (factory-user-agents/factory-roles), factory-roles IT-001 and IT-006 passed"

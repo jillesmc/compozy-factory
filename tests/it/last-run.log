@@ -1,7 +1,7 @@
 
-## isolated daemon (COMPOZY_HOME=/tmp/cf-it.NOyGbA/home, port 55225)
+## isolated daemon (COMPOZY_HOME=/tmp/cf-it.o6NvXs/home, port 46389)
 isolation: workspace list is empty (fresh home)
-daemon.json port 55225 pid 1046559
+daemon.json port 46389 pid 1581400
 
 ## IT-001 install
 installed factory-sentinel
@@ -30,7 +30,7 @@ factory-pr-watcher origin=global
 factory-reviewer origin=global
 factory-scribe origin=global
 factory-sentinel origin=global
-workspace scratch ws_7365dba7377c9d58
+workspace scratch ws_e8c716bb42a74457
 hash match source factory-dispatcher/deliver sha256:61602d59630d0a1c8a80a3a043980377d9dcf50609b7fde4ff610ecc6a85f403
 hash match source factory-auditor/due sha256:61602d59630d0a1c8a80a3a043980377d9dcf50609b7fde4ff610ecc6a85f403
 hash match authority factory-auditor sha256:c1d6c124f49c66871750810854d239c415073499504e15f35de812d8ee7f6dc8
@@ -44,24 +44,24 @@ daemon: factory-auditor sources approved
 daemon: factory-auditor authority approved
 
 ## IT-002 attach scratch
-attach by path: bin/attach /tmp/cf-it.NOyGbA/scratch --allow-unsupported-adapter (no conformance records before the S5 walks)
+attach by path: bin/attach /tmp/cf-it.o6NvXs/scratch --allow-unsupported-adapter (no conformance records before the S5 walks)
 warning: adapter signals/newrelic is not supported (conformance record missing); attaching anyway
 warning: adapter code/github is not supported (conformance record missing); attaching anyway
 warning: adapter work/jira is not supported (conformance record missing); attaching anyway
 warning: adapter review/github-app-review is not supported (conformance record missing); attaching anyway
 warning: adapter deploy/github-deployments is not supported (conformance record missing); attaching anyway
 reviewer factory-reviewer origin global layer user file 8e8452c630cb digest b75184c92020 (installed)
-attached factory-sentinel     (ainst-060b17fdcfbea8d3)
+attached factory-sentinel     (ainst-43eb90daf26cfb62)
 boundary factory-sentinel ok
-attached factory-scribe       (ainst-a8f5ef7fd7ff5891)
+attached factory-scribe       (ainst-2d9687dc276e3568)
 boundary factory-scribe ok
-attached factory-dispatcher   (ainst-4dd8394f7eeeeb2e)
+attached factory-dispatcher   (ainst-294b02013069a0bf)
 boundary factory-dispatcher ok
-attached factory-pr-watcher   (ainst-cedfe9c8023f41e2)
+attached factory-pr-watcher   (ainst-7ad13de758689ede)
 boundary factory-pr-watcher ok
-attached factory-gatekeeper   (ainst-a41c9bcbdab0a897)
+attached factory-gatekeeper   (ainst-e55857b20fe5474d)
 boundary factory-gatekeeper ok
-attached factory-auditor      (ainst-66e58a23922f7069)
+attached factory-auditor      (ainst-cf3aeab8fab924af)
 boundary factory-auditor ok
 active instances: factory-auditor factory-dispatcher factory-gatekeeper factory-pr-watcher factory-scribe factory-sentinel
 attach by name: bin/attach scratch
@@ -136,10 +136,10 @@ installed.json reviewer b75184c92020 daemon b75184c92020 origin global layer use
 ok: factory-reviewer origin global layer user file 8e8452c630cb digest b75184c92020 (installed)
 
 ## IT-008 two workspaces, one approved deliver source, per-project adapter code
-workspace wsb ws_1b5fc843627eadd0
+workspace wsb ws_557245492e8017fe
 adapter    code/github tree 8d520d5abdd7 (SKILL.md, ops.py, sources/deliver.py, sources/due.py); provider matches [roles.code]
 conformance conformance record missing → unsupported; attach needs --allow-unsupported-adapter
-install to /tmp/cf-it.NOyGbA/home/factory/adapters/code-github@8d520d5abdd7e68d4efaf363deb57e5689d8d3fb4314a26c71463be6d54220cc, skill factory-code-github-8d520d5abdd7, and bind (/tmp/cf-it.NOyGbA/wsb, code, github)? [y/N] installed  binding (wsb, code, github) → @8d520d5abdd7, skill factory-code-github-8d520d5abdd7
+install to /tmp/cf-it.o6NvXs/home/factory/adapters/code-github@8d520d5abdd7e68d4efaf363deb57e5689d8d3fb4314a26c71463be6d54220cc, skill factory-code-github-8d520d5abdd7, and bind (/tmp/cf-it.o6NvXs/wsb, code, github)? [y/N] installed  binding (wsb, code, github) → @8d520d5abdd7, skill factory-code-github-8d520d5abdd7
 bindings: [('code', 'github', 'factory-code-github-8d520d5abdd7')]
 scratch (bundled code/github) items: ['issue-1@9']
 wsb (custom adapter) items: ['stub-b']
@@ -149,18 +149,18 @@ source_failed: custom adapter code/github changed (tree 8e92f7b4f415 ≠ install
 scratch still works: ['issue-1@9']
 adapter    code/github tree 8e92f7b4f415 (SKILL.md, ops.py, sources/deliver.py, sources/due.py); provider matches [roles.code]
 conformance conformance record missing → unsupported; attach needs --allow-unsupported-adapter
-install to /tmp/cf-it.NOyGbA/home/factory/adapters/code-github@8e92f7b4f415bef2979ba17e351014d7a0a80f86a307bef5918630e1946d1f37, skill factory-code-github-8e92f7b4f415, and bind (/tmp/cf-it.NOyGbA/wsb, code, github)? [y/N] installed  binding (wsb, code, github) → @8e92f7b4f415, skill factory-code-github-8e92f7b4f415
+install to /tmp/cf-it.o6NvXs/home/factory/adapters/code-github@8e92f7b4f415bef2979ba17e351014d7a0a80f86a307bef5918630e1946d1f37, skill factory-code-github-8e92f7b4f415, and bind (/tmp/cf-it.o6NvXs/wsb, code, github)? [y/N] installed  binding (wsb, code, github) → @8e92f7b4f415, skill factory-code-github-8e92f7b4f415
 wsb restored after re-install: ['stub-b']
 
 ## IT-009 two workspaces, two digest-qualified user skills for one custom adapter
-workspace wsc ws_40ad25a8621f5824
+workspace wsc ws_d70be5dee3369333
 adapter    code/github tree 45a6e825e25d (SKILL.md, ops.py, sources/deliver.py, sources/due.py); provider matches [roles.code]
 conformance conformance record missing → unsupported; attach needs --allow-unsupported-adapter
-install to /tmp/cf-it.NOyGbA/home/factory/adapters/code-github@45a6e825e25d7032b78009d7ff598496c464685578d1b14d29cb9c6c867d42d1, skill factory-code-github-45a6e825e25d, and bind (/tmp/cf-it.NOyGbA/wsc, code, github)? [y/N] installed  binding (wsc, code, github) → @45a6e825e25d, skill factory-code-github-45a6e825e25d
-wsb: ok: skill factory-code-github-8e92f7b4f415 path /tmp/cf-it.NOyGbA/home/skills/factory-code-github-8e92f7b4f415/SKILL.md
-daemon resolves factory-code-github-8e92f7b4f415 from user /tmp/cf-it.NOyGbA/home/skills/factory-code-github-8e92f7b4f415
-wsc: ok: skill factory-code-github-45a6e825e25d path /tmp/cf-it.NOyGbA/home/skills/factory-code-github-45a6e825e25d/SKILL.md
-daemon resolves factory-code-github-45a6e825e25d from user /tmp/cf-it.NOyGbA/home/skills/factory-code-github-45a6e825e25d
+install to /tmp/cf-it.o6NvXs/home/factory/adapters/code-github@45a6e825e25d7032b78009d7ff598496c464685578d1b14d29cb9c6c867d42d1, skill factory-code-github-45a6e825e25d, and bind (/tmp/cf-it.o6NvXs/wsc, code, github)? [y/N] installed  binding (wsc, code, github) → @45a6e825e25d, skill factory-code-github-45a6e825e25d
+wsb: ok: skill factory-code-github-8e92f7b4f415 path /tmp/cf-it.o6NvXs/home/skills/factory-code-github-8e92f7b4f415/SKILL.md
+daemon resolves factory-code-github-8e92f7b4f415 from user /tmp/cf-it.o6NvXs/home/skills/factory-code-github-8e92f7b4f415
+wsc: ok: skill factory-code-github-45a6e825e25d path /tmp/cf-it.o6NvXs/home/skills/factory-code-github-45a6e825e25d/SKILL.md
+daemon resolves factory-code-github-45a6e825e25d from user /tmp/cf-it.o6NvXs/home/skills/factory-code-github-45a6e825e25d
 provider effect recorded: {'op': 'issue_comment', 'args': ['7', 'hello']}
 
 ## factory-roles IT-001 bin/migrate-config on a copy of an old factory.toml, then bin/attach --dry-run
@@ -168,7 +168,7 @@ converted  .compozy/factory/factory.toml (6 sections → [roles.*])
 newrelic   .compozy/newrelic.toml (app, account_id from the old [newrelic])
 approvers  promotion approvers for acme/acme-api (comma-separated GitHub logins): branch     factory/migrate-roles from origin/develop, pushed
 pr         #1 opened into develop (the reviewer flags the factory.toml change for you)
-policy     working copy /tmp/cf-it.NOyGbA/migrate/cfg/policy.toml updated with:
+policy     working copy /tmp/cf-it.o6NvXs/migrate/cfg/policy.toml updated with:
            [repos."acme/acme-api"]
            delivery_base = "develop"
            promotion = { head = "develop", base = "main" }
@@ -177,7 +177,7 @@ policy     staged     policies/fd6b9808804b960b7d7bfd3fd20876b009c364d4293059e69
 policy     activate   printf fd6b9808804b960b7d7bfd3fd20876b009c364d4293059e69a7ad6793fb2676a | compozy extension secrets set github-app-review --env GITHUB_APP_POLICY_DIGEST --value-stdin
 policy     not active: the activation runbook switches GITHUB_APP_POLICY_DIGEST (R3)
 migrated factory.toml validates: {'signals': ['newrelic'], 'code': 'github', 'work': 'jira', 'review': 'github-app-review', 'deploy': 'github-deployments'}
-workspace migrated ws_3cf32eaae4c9996d
+workspace migrated ws_ef91e13931115ad3
 warning: adapter signals/newrelic is not supported (conformance record missing); attaching anyway
 warning: adapter code/github is not supported (conformance record missing); attaching anyway
 warning: adapter work/jira is not supported (conformance record missing); attaching anyway
@@ -195,7 +195,252 @@ dry-run created no instance
 ## factory-roles UT-029 on the real daemon: bin/reload runs the reviewer guard and gives the new main session its boundary turn
 reviewer factory-reviewer origin global layer user file 8e8452c630cb digest b75184c92020 (installed)
 == factory-scribe
-   main: sess-6933818580ec4d6d provider: claude-mm4
+   main: sess-3d396a3d359c0f74 provider: claude-mm4
 boundary factory-scribe ok
 
-## IT-001..IT-004, IT-007..IT-009 (factory-user-agents/factory-roles) and factory-roles IT-001 passed
+## factory-roles IT-006 activation runbook (tests/it/activation.sh: its own isolated daemon)
+
+## IT-006 released extension builds (GitHub releases, sha256 checked)
+github-app-review v0.2.2   version = "0.2.2"
+github-app-review v0.3.0   version = "0.3.0"
+newrelic v0.3.1   version = "0.3.1"
+newrelic v0.4.0   version = "0.4.0"
+
+## P-11 published-source pin (a second, short-lived isolated daemon)
+compozy extension install github:jillesmc/compozy-github-app@v0.2.2 --expected-digest 5440b940cb736e95c5fe667954f549b01c063468a0c8ffea5d3e5f872ba9b7db --allow-unverified
+published install: archive_digest_sha256 = the release's .tar.gz.sha256; rollback command pins it
+pinned published reinstall: ✓ install github-app-review
+wrong archive pin refused: source changed since it was listed
+
+## isolated daemon (COMPOZY_HOME=/tmp/cf-it6.D37uTZ/home, port 57133)
+isolation: workspace list is empty (fresh home)
+
+## R0 world: factory 0ea0254, old extensions, old-grammar project, instances attached
+installed factory-sentinel
+installed factory-scribe
+installed factory-dispatcher
+installed factory-pr-watcher
+installed factory-gatekeeper
+installed factory-auditor
+installed factory-reviewer
+installed tools (factory_intake.py)
+approve before attaching:
+  compozy agent heartbeat sources approve factory-dispatcher deliver --sha256 sha256:490f2871bed72772c3293287218edf1e53ef33640d298fe3540a37d12d04b874 --workspace @user --yes
+  compozy agent heartbeat sources approve factory-auditor due --sha256 sha256:83291145ae4eeef6aaf2c29b81024a4153599a928a91a2226b11bc0500f0bdc8 --workspace @user --yes
+  compozy agent heartbeat authority approve factory-auditor --sha256 sha256:2b0861da695cf7e057b3a834381886289338a30372ad21b315ca50ea3db0cf23 --workspace @user --yes
+ok: compozy agent heartbeat sources approve factory-dispatcher deliver --sha256 sha256:490f2871bed72772c3293287218edf1e53ef33640d298fe3540a37d12d04b874 --workspace @user --yes
+ok: compozy agent heartbeat sources approve factory-auditor due --sha256 sha256:83291145ae4eeef6aaf2c29b81024a4153599a928a91a2226b11bc0500f0bdc8 --workspace @user --yes
+ok: compozy agent heartbeat authority approve factory-auditor --sha256 sha256:2b0861da695cf7e057b3a834381886289338a30372ad21b315ca50ea3db0cf23 --workspace @user --yes
+workspace acme ws_bd8a8f371f7c7589
+attached factory-sentinel     (ainst-741886f80d9b05af)
+attached factory-scribe       (ainst-edc9ba6ebc8bcd03)
+attached factory-dispatcher   (ainst-692519edc1987fec)
+attached factory-pr-watcher   (ainst-680a6f570c615ba3)
+attached factory-gatekeeper   (ainst-749ed86bdfcd8285)
+attached factory-auditor      (ainst-908170061ab5e18c)
+newrelic source: failing source_extension_failed json-rpc error -32000: New Relic request failed: network error (ECONNREFUSED)
+R0: pr_context on merged #230 through the old extension
+
+## R0 record (bin/runbook-r0)
+recorded   /tmp/cf-it6.D37uTZ/record/r0.json
+workspace  /tmp/cf-it6.D37uTZ/acme-api HEAD b110966fdddb086392308189f908818d0a08422c (acme/acme-api, base develop)
+factory    0ea0254f07d6eda2a09b600ed52415a01361d0eb
+extension  github-app-review 0.2.2 (active; from /tmp/cf-it6.D37uTZ/rel/github-app-review-v0.2.2/pkg) env GITHUB_APP_BASE, GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, GITHUB_APP_PRIVATE_KEY, GITHUB_APP_PROMOTION, GITHUB_APP_PROMOTION_APPROVERS, GITHUB_APP_REPOS
+rollback   compozy extension install /tmp/cf-it6.D37uTZ/rel/github-app-review-v0.2.2/pkg --replace --expected-digest 71a873f7adc9bbf2c810e7bd86974512a3eb20021dcd9d88b236f695f7d7e721 --allow-unverified
+extension  newrelic 0.3.1 (active; from /tmp/cf-it6.D37uTZ/rel/newrelic-v0.3.1/pkg) env NEW_RELIC_ACCOUNT_ID, NEW_RELIC_API_KEY, NEW_RELIC_APP
+rollback   compozy extension install /tmp/cf-it6.D37uTZ/rel/newrelic-v0.3.1/pkg --replace --expected-digest 3aca6bb3f66c6bab25e23660331394c8d163c37c51f8f5124b8071051532e344 --allow-unverified
+agent      factory-auditor digest 6c9272fcb545 tree a9f5d9e6f26d
+agent      factory-dispatcher digest 8dd08243feb4 tree e1982e3a6cbc
+agent      factory-gatekeeper digest 0bf668317bec tree a7e8ea64c714
+agent      factory-pr-watcher digest 89858b8b558e tree 9a5ff5b92a56
+agent      factory-reviewer digest 44759eaa522b tree 47697ff8741a
+agent      factory-scribe digest c609bfcbdc6c tree 4509e171afe7
+agent      factory-sentinel digest e989ddb4f164 tree 1cb3b52dad4e
+toml       at origin/develop 43146fde5f1d (copy /tmp/cf-it6.D37uTZ/record/r0.json.factory.toml); checkout 43146fde5f1d
+newrelic   .compozy/newrelic.toml absent
+instances  it-nr-probe=paused, factory-pr-watcher=active, factory-dispatcher=active, factory-sentinel=active, factory-gatekeeper=active, factory-auditor=active, factory-scribe=active
+smoke      last merged delivery PR #230
+smoke      gate #231 {"ready": true, "head_sha": "9f2c1e0a7b3d4c5e6f708192a3b4c5d6e7f80912", "reasons": []}
+R0 gate verdict #231: {"head_sha": "9f2c1e0a7b3d4c5e6f708192a3b4c5d6e7f80912", "ready": true, "reasons": []}
+R0 record: extensions 0.2.2/0.3.1, factory 0ea0254, 7 agent digests, factory.toml at base, smoke PRs
+R0 capture changed nothing in the workspace or the factory checkout
+R0 record inside the workspace refused
+R0 capture with a failed gate read refused, nothing written
+refused: incomplete R0 capture, nothing recorded: smoke gate #231: compozy tool invoke ext__github_app_review__merge_gate --workspace acme --input {"repo": "acm
+
+## R1 pause the six instances
+probe: six instances paused
+same     extensions
+same     factory commit
+same     agents
+same     factory.toml at base
+same     factory.toml in checkout
+same     newrelic.toml absent
+
+## R2 stage: bin/migrate-config, migration PR merged outside the factory, bin/stage-policy
+converted  .compozy/factory/factory.toml (6 sections → [roles.*])
+newrelic   .compozy/newrelic.toml (app, account_id from the old [newrelic])
+approvers  promotion approvers for acme/acme-api (comma-separated GitHub logins): branch     factory/migrate-roles from origin/develop, pushed
+pr         #240 opened into develop (the reviewer flags the factory.toml change for you)
+policy     working copy /tmp/cf-it6.D37uTZ/policy/policy.toml updated with:
+           [repos."acme/acme-api"]
+           delivery_base = "develop"
+           promotion = { head = "develop", base = "main" }
+           approvers = ["octocat"]
+policy     staged     policies/fd6b9808804b960b7d7bfd3fd20876b009c364d4293059e69a7ad6793fb2676a.toml (byte copy of the working copy; schema checked)
+policy     activate   printf fd6b9808804b960b7d7bfd3fd20876b009c364d4293059e69a7ad6793fb2676a | compozy extension secrets set github-app-review --env GITHUB_APP_POLICY_DIGEST --value-stdin
+policy     not active: the activation runbook switches GITHUB_APP_POLICY_DIGEST (R3)
+workspace HEAD = migration merge b81f25d5f001febc1337523c108ac3eb29b0a9f8; factory.toml and newrelic.toml bytes equal the PR's
+unchanged  policies/fd6b9808804b960b7d7bfd3fd20876b009c364d4293059e69a7ad6793fb2676a.toml
+activate   printf fd6b9808804b960b7d7bfd3fd20876b009c364d4293059e69a7ad6793fb2676a | compozy extension secrets set github-app-review --env GITHUB_APP_POLICY_DIGEST --value-stdin
+probe: six instances paused
+newrelic source: failing source_extension_failed json-rpc error -32000: New Relic request failed: network error (ECONNREFUSED)
+probe: old github-app-review ignores the new files; gate #231 = R0 verdict
+probe: github-app-review catalog is doctor only
+same     extensions
+same     factory commit
+same     agents
+differs  factory.toml at base: R0 sha256:43146fde5f1ded35ad7d7bb711619acca548319bdbec0209534aedc7ccf42583 now sha256:561592cdc2eeae7c97dcebc5d24018616c9c0071808e30c51cbdfeefa0308557
+differs  factory.toml in checkout: R0 sha256:43146fde5f1ded35ad7d7bb711619acca548319bdbec0209534aedc7ccf42583 now sha256:561592cdc2eeae7c97dcebc5d24018616c9c0071808e30c51cbdfeefa0308557
+differs  newrelic.toml absent: R0 True now False
+probe: only factory.toml (base, checkout) and newrelic.toml moved
+no policy-stage / policy_stage call (exec or tool invoke) before R3 (119 CLI calls logged)
+
+## R3 activate together: extensions, digest, bin/install, bin/reload
+policy before the switch: active unset, working fd6b9808804b960b7d7bfd3fd20876b009c364d4293059e69a7ad6793fb2676a
+policy: staged working copy, digest unset
+after secrets set, before the restart: active unset
+policy active fd6b9808804b960b7d7bfd3fd20876b009c364d4293059e69a7ad6793fb2676a (approved)
+updated factory-sentinel
+updated factory-scribe
+updated factory-dispatcher
+updated factory-pr-watcher
+updated factory-gatekeeper
+updated factory-auditor
+updated factory-reviewer
+updated tools (factory_envelope.py, factory_external.py, factory_guard.py, factory_intake.py)
+installed adapter code-github tree dcd4757c561c
+installed adapter deploy-github-deployments tree 92cac4232502
+installed adapter review-github-app-review tree d9ce4156f87c
+installed adapter signals-newrelic tree 7ee6a9614802
+installed adapter work-github tree 447101dac336
+installed adapter work-jira tree 81debf6087bf
+reviewer factory-reviewer digest b75184c92020 (origin global, layer user) recorded
+approve before attaching:
+  compozy agent heartbeat sources approve factory-dispatcher deliver --sha256 sha256:61602d59630d0a1c8a80a3a043980377d9dcf50609b7fde4ff610ecc6a85f403 --workspace @user --yes
+  compozy agent heartbeat sources approve factory-auditor due --sha256 sha256:61602d59630d0a1c8a80a3a043980377d9dcf50609b7fde4ff610ecc6a85f403 --workspace @user --yes
+  compozy agent heartbeat authority approve factory-auditor --sha256 sha256:c1d6c124f49c66871750810854d239c415073499504e15f35de812d8ee7f6dc8 --workspace @user --yes
+ok: compozy agent heartbeat sources approve factory-dispatcher deliver --sha256 sha256:61602d59630d0a1c8a80a3a043980377d9dcf50609b7fde4ff610ecc6a85f403 --workspace @user --yes
+ok: compozy agent heartbeat sources approve factory-auditor due --sha256 sha256:61602d59630d0a1c8a80a3a043980377d9dcf50609b7fde4ff610ecc6a85f403 --workspace @user --yes
+ok: compozy agent heartbeat authority approve factory-auditor --sha256 sha256:c1d6c124f49c66871750810854d239c415073499504e15f35de812d8ee7f6dc8 --workspace @user --yes
+reviewer factory-reviewer origin global layer user file 8e8452c630cb digest b75184c92020 (installed)
+== factory-sentinel
+   paused factory-sentinel
+   main: sess-e4f3be2a7cdee6bf provider: claude-mm4
+boundary factory-sentinel ok
+== factory-scribe
+   paused factory-scribe
+   main: sess-40fbe4c5cd71c685 provider: claude-mm4
+boundary factory-scribe ok
+== factory-dispatcher
+   paused factory-dispatcher
+   main: sess-6c7cb58e7b8bdb18 provider: claude-mm4
+boundary factory-dispatcher ok
+== factory-pr-watcher
+   paused factory-pr-watcher
+   main: sess-cb3aa07be348d593 provider: claude-mm4
+boundary factory-pr-watcher ok
+== factory-gatekeeper
+   paused factory-gatekeeper
+   main: sess-825ae1739250763b provider: claude-mm4
+boundary factory-gatekeeper ok
+== factory-auditor
+   paused factory-auditor
+   main: sess-c8a79422ad33f84e provider: claude
+boundary factory-auditor ok
+probe: six instances paused
+probe: active it-tick instance has 1 check-in record(s) in the same window
+probe: no check-in occurrence on the six new instances (after bin/reload --pause)
+differs  extensions: R0 {'github-app-review': {'version': '0.2.2', 'source_url': '/tmp/cf-it6.D37uTZ/rel/github-app-review-v0.2.2/pkg', 'checksum_sha256': '71a873f7adc9bbf2c810e7bd86974512a3eb20021dcd9d88b236f695f7d7e721', 'archive_digest_sha256': None}, 'newrelic': {'version': '0.3.1', 'source_url': '/tmp/cf-it6.D37uTZ/rel/newrelic-v0.3.1/pkg', 'checksum_sha256': '3aca6bb3f66c6bab25e23660331394c8d163c37c51f8f5124b8071051532e344', 'archive_digest_sha256': None}} now {'github-app-review': {'version': '0.3.0', 'source_url': '/tmp/cf-it6.D37uTZ/rel/github-app-review-v0.3.0/pkg', 'checksum_sha256': '1f1db6960cfd167e72939c8f8ff251362ef9561b938329bb1e0b68dbfbea85c1', 'archive_digest_sha256': None}, 'newrelic': {'version': '0.4.0', 'source_url': '/tmp/cf-it6.D37uTZ/rel/newrelic-v0.4.0/pkg', 'checksum_sha256': '86eeffd3c0ebefd54891d1400bb441c8b9df35ad8819faee3e95c36d075e6753', 'archive_digest_sha256': None}}
+differs  factory commit: R0 0ea0254f07d6eda2a09b600ed52415a01361d0eb now 9482a488fe104b82d243e5aa3901e20e51803cc5
+differs  agents: R0 {'factory-auditor': {'digest': '6c9272fcb545133c73667810ee493394c0dca978a550634990ce8ea9ddedb809', 'tree': 'sha256:a9f5d9e6f26d5ccf79fc92ea24661e021df6e1658e3917dbc312956a4892501a'}, 'factory-dispatcher': {'digest': '8dd08243feb4437105f96b929c63aed3dd52906fa230d9bdcb054820d7ccf3f2', 'tree': 'sha256:e1982e3a6cbc6cfa168d6676a4fd3dd201806e469903727bed44ec1010b8fba3'}, 'factory-gatekeeper': {'digest': '0bf668317beccfc04f55711ec2e4b76c2dff409b72ea314fe7f67d89dd7c36c7', 'tree': 'sha256:a7e8ea64c714d16ed62440925858a936d19e5cc16917d415c4d3b6816afeb3ae'}, 'factory-pr-watcher': {'digest': '89858b8b558e932bf9120d65dc5f3fe4cac22b21b9e4ab26dc6bcdcab215fd17', 'tree': 'sha256:9a5ff5b92a56854c7d32fda326e5c4919de4f6a71e477e7590fe5490490650dc'}, 'factory-reviewer': {'digest': '44759eaa522b264fd5f1f03b90cc72bc505de22cda6237ad63d8023277a36f64', 'tree': 'sha256:47697ff8741a3eb3a2d7c627f611ebe3c3b844c53dedccfdfcea39800f13aba6'}, 'factory-scribe': {'digest': 'c609bfcbdc6cef18fa5acbf25833b50ac2f190bdc4f139efd5c156d015dffdfe', 'tree': 'sha256:4509e171afe771b069e4ae1c8479c4ae599ca2125e8d3f6f3668e03d0b35e889'}, 'factory-sentinel': {'digest': 'e989ddb4f164b2338ac80e20a72d30835e80ce813f73e3af4b1783e6295a4f7c', 'tree': 'sha256:1cb3b52dad4e827478ba31981e457d877d2337d91078eeca1fd1893ee71ec693'}} now {'factory-auditor': {'digest': 'ac8336a73d13b9fe39769ec48b037eeebbffc6b8a240edbef0f28356640debbc', 'tree': 'sha256:214f2908e4c542e053b088b62f8602c28ba06a0f82a1237cd1708b57362b5d59'}, 'factory-dispatcher': {'digest': 'd0fc79c9893216f2352d3b05938681a9eaaa0a3f0b5c8de1ce1dcebb5a8279da', 'tree': 'sha256:81107884898560209cb0acb70dcb6f15e4f40a0af360d5989c119cc6ad2212c0'}, 'factory-gatekeeper': {'digest': '6d959daa8eb799d92aed7350e01f92b3ed7d7b5c20d971c7116004ccb1c3f16a', 'tree': 'sha256:14791e3650663abb203caa5c95a48464213371230a32fd7ee1eb094cafb40373'}, 'factory-pr-watcher': {'digest': 'c8d2fdf6689f7d9fba475821bbb4210886e547e7a97f17a0d18b09a9711e6be4', 'tree': 'sha256:fc17a9c3b2b612e735b2a9c557fc49112b1985ba8619e993171bc054ccca35d2'}, 'factory-reviewer': {'digest': 'b75184c92020144be624a7edc1e57ba056a1cf73488e69d9e522c8c52ec332c0', 'tree': 'sha256:a7f79f0a58a3cafb41dab6f49cd077db3eb1a697ecbbfdd4549f2f3b12abee56'}, 'factory-scribe': {'digest': '9f5e9796141d5e5eb6dfe0a25d197ad60606af3b8a0f47060d225050dc4715ef', 'tree': 'sha256:6997ef5af96718eee357097ec36ea04149e29b838b857ffe58c6549bad0b44e0'}, 'factory-sentinel': {'digest': '7de195c9b68953f1e4a4cf64831c52bed1d567d98c98b2ca119367a9544c630b', 'tree': 'sha256:e9ab13dae12a5c95bdacc40b089fd86c54862856f0078d292238ed0e5415a330'}}
+differs  factory.toml at base: R0 sha256:43146fde5f1ded35ad7d7bb711619acca548319bdbec0209534aedc7ccf42583 now sha256:561592cdc2eeae7c97dcebc5d24018616c9c0071808e30c51cbdfeefa0308557
+differs  factory.toml in checkout: R0 sha256:43146fde5f1ded35ad7d7bb711619acca548319bdbec0209534aedc7ccf42583 now sha256:561592cdc2eeae7c97dcebc5d24018616c9c0071808e30c51cbdfeefa0308557
+differs  newrelic.toml absent: R0 True now False
+probe: extensions, factory commit and agents moved
+
+## R4 smoke
+smoke: policy fd6b9808804b960b7d7bfd3fd20876b009c364d4293059e69a7ad6793fb2676a active
+smoke: pr_context on merged #230 ok
+smoke: merge_gate #231 = R0 verdict {"head_sha": "9f2c1e0a7b3d4c5e6f708192a3b4c5d6e7f80912", "ready": true, "reasons": []}
+newrelic source: failing source_extension_failed json-rpc error -32000: New Relic request failed: network error (ECONNREFUSED)
+failing source_params_invalid json-rpc error -32000: with.where uses {{app}}; set app in .compozy/newrelic.toml or with.app
+smoke: {{app}} comes from .compozy/newrelic.toml (absent → source_params_invalid; NEW_RELIC_APP ignored)
+ok: factory-reviewer origin global layer user file 8e8452c630cb digest b75184c92020 (installed)
+warning: adapter signals/newrelic is not supported (conformance record missing); attaching anyway
+warning: adapter code/github is not supported (conformance record missing); attaching anyway
+warning: adapter work/jira is not supported (conformance record missing); attaching anyway
+warning: adapter review/github-app-review is not supported (conformance record missing); attaching anyway
+warning: adapter deploy/github-deployments is not supported (conformance record missing); attaching anyway
+reviewer factory-reviewer origin global layer user file 8e8452c630cb digest b75184c92020 (installed)
+exists factory-sentinel
+exists factory-scribe
+exists factory-dispatcher
+exists factory-pr-watcher
+exists factory-gatekeeper
+exists factory-auditor
+
+## R4 injected failure → rollback to the R0 set
+smoke failed as injected (GitHub rejects the token): rolling back
+probe: active it-tick instance has 1 check-in record(s) in the same window
+probe: no check-in occurrence on the six new instances (through R4)
+rollback: compozy extension install /tmp/cf-it6.D37uTZ/rel/github-app-review-v0.2.2/pkg --replace --expected-digest 71a873f7adc9bbf2c810e7bd86974512a3eb20021dcd9d88b236f695f7d7e721 --allow-unverified
+pinned reinstall: ✓ install github-app-review
+rollback: compozy extension install /tmp/cf-it6.D37uTZ/rel/newrelic-v0.3.1/pkg --replace --expected-digest 3aca6bb3f66c6bab25e23660331394c8d163c37c51f8f5124b8071051532e344 --allow-unverified
+pinned reinstall: ✓ install newrelic
+updated factory-sentinel
+updated factory-scribe
+updated factory-dispatcher
+updated factory-pr-watcher
+updated factory-gatekeeper
+updated factory-auditor
+updated factory-reviewer
+updated tools (factory_intake.py)
+approve before attaching:
+  compozy agent heartbeat sources approve factory-dispatcher deliver --sha256 sha256:490f2871bed72772c3293287218edf1e53ef33640d298fe3540a37d12d04b874 --workspace @user --yes
+  compozy agent heartbeat sources approve factory-auditor due --sha256 sha256:83291145ae4eeef6aaf2c29b81024a4153599a928a91a2226b11bc0500f0bdc8 --workspace @user --yes
+  compozy agent heartbeat authority approve factory-auditor --sha256 sha256:2b0861da695cf7e057b3a834381886289338a30372ad21b315ca50ea3db0cf23 --workspace @user --yes
+ok: compozy agent heartbeat sources approve factory-dispatcher deliver --sha256 sha256:490f2871bed72772c3293287218edf1e53ef33640d298fe3540a37d12d04b874 --workspace @user --yes
+ok: compozy agent heartbeat sources approve factory-auditor due --sha256 sha256:83291145ae4eeef6aaf2c29b81024a4153599a928a91a2226b11bc0500f0bdc8 --workspace @user --yes
+ok: compozy agent heartbeat authority approve factory-auditor --sha256 sha256:2b0861da695cf7e057b3a834381886289338a30372ad21b315ca50ea3db0cf23 --workspace @user --yes
+-- assertions before bin/reload
+workspace HEAD = revert merge ee5bcb27829df8362b3b287207e7d3e4129a924b
+factory.toml bytes = R0
+.compozy/newrelic.toml absent
+factory checkout at 0ea0254
+same     extensions
+same     factory commit
+same     agents
+same     factory.toml at base
+same     factory.toml in checkout
+same     newrelic.toml absent
+approved policy version kept on disk (fd6b9808804b960b7d7bfd3fd20876b009c364d4293059e69a7ad6793fb2676a)
+== factory-sentinel
+   main: sess-303f97ad3c81e5bc provider: claude-mm4
+== factory-scribe
+   main: sess-8ae903e1363c571a provider: claude-mm4
+== factory-dispatcher
+   main: sess-66a9ef13329d75b4 provider: claude-mm4
+== factory-pr-watcher
+   main: sess-52d55e810f0d2b39 provider: claude-mm4
+== factory-gatekeeper
+   main: sess-09f6b43bbce32df3 provider: claude-mm4
+== factory-auditor
+   main: sess-3320854c1b04daf2 provider: claude
+after reload: gate #231 through v0.2.2 = R0 verdict (removed env keys never unset: no re-entry)
+newrelic source: failing source_extension_failed json-rpc error -32000: New Relic request failed: network error (ECONNREFUSED)
+resumed: six instances active on the R0 set
+
+## factory-roles IT-006 passed
+
+## IT-001..IT-004, IT-007..IT-009 (factory-user-agents/factory-roles), factory-roles IT-001 and IT-006 passed

@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Recreate always-on instances so the main session loads the current AGENT.md and provider.
 
-Usage: bin/reload <workspace> [agent...]   # no agent = factory.toml [team] agents (default: all six)
+Usage: bin/reload <workspace> [agent...] [--pause]   # no agent = factory.toml [team] agents (default: all six)
 
 First the reviewer guard (`factory_guard.py reviewer`, BR-16): on refusal nothing is archived. On-demand
 agents (factory-reviewer) have no instance and are skipped. Each recreated main session gets one boundary
 prompt (workaround for compozy/compozy#1815): `boundary <agent> ok`.
+--pause pauses each new instance right after `agent instance create`, before its boundary prompt and before
+the next agent (`paused <agent>`): a new active instance is due for a check-in at once, so the activation
+runbook (R3) recreates the team without any check-in until R5 resumes it. A paused instance's main session
+still takes the boundary prompt.
 
 `clear-main` is not enough: it keeps the same session id and the provider recorded in it.
 Agent memory and approvals (script/authority) belong to the agent definition and stay.
@@ -28,6 +32,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("workspace")
     parser.add_argument("agents", nargs="*")
+    parser.add_argument("--pause", action="store_true", help="pause each new instance before its boundary turn")
     args = parser.parse_args()
     ws = args.workspace
     agents = args.agents or default_agents(ws)
@@ -47,6 +52,9 @@ def main():
         except RuntimeError:
             print("   (no active instance)")
         created = fl.compozy("agent", "instance", "create", agent, "--workspace", ws)
+        if args.pause:
+            fl.compozy("agent", "instance", "pause", created["instance"]["id"], "--workspace", ws)
+            print(f"   paused {agent}")
         listed = fl.compozy("agent", "instance", "list", "--workspace", ws, "--agent", agent)
         for inst in listed.get("instances", []):
             if inst["agent_name"] == agent and inst.get("state") != "archived":

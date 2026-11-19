@@ -45,6 +45,11 @@ if cmd == ["agent", "instance", "create"]:
             "main_session_id": f"sess-{args[3]}", "provider": "claude-mm4"}
     state["instances"].append(inst)
     out({"instance": inst})
+if cmd == ["agent", "instance", "pause"]:
+    for i in state["instances"]:
+        if args[3] in (i["id"], i["agent_name"]):
+            i["state"] = "paused"
+    out({})
 if cmd == ["agent", "instance", "archive"]:
     before = len(state["instances"])
     state["instances"] = [i for i in state["instances"] if i["agent_name"] != args[3]]
