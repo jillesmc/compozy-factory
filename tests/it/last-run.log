@@ -1,7 +1,7 @@
 
-## isolated daemon (COMPOZY_HOME=/tmp/cf-it.IuSMvo/home, port 42433)
+## isolated daemon (COMPOZY_HOME=/tmp/cf-it.CntQYm/home, port 48821)
 isolation: workspace list is empty (fresh home)
-daemon.json port 42433 pid 790940
+daemon.json port 48821 pid 4009159
 
 ## IT-001 install
 installed factory-sentinel
@@ -10,40 +10,61 @@ installed factory-dispatcher
 installed factory-pr-watcher
 installed factory-gatekeeper
 installed factory-auditor
-installed tools (factory_intake.py)
+installed factory-reviewer
+installed tools (factory_envelope.py, factory_guard.py, factory_intake.py)
+installed adapter code-github tree 04b6847b3189
+installed adapter deploy-github-deployments tree 92cac4232502
+installed adapter review-github-app-review tree d9ce4156f87c
+installed adapter signals-newrelic tree 7ee6a9614802
+installed adapter work-github tree 121cd43f60b2
+installed adapter work-jira tree 4fedab21f886
+reviewer factory-reviewer digest 44759eaa522b (origin global, layer user) recorded
 approve before attaching:
-  compozy agent heartbeat sources approve factory-dispatcher deliver --sha256 sha256:490f2871bed72772c3293287218edf1e53ef33640d298fe3540a37d12d04b874 --workspace @user --yes
-  compozy agent heartbeat sources approve factory-auditor due --sha256 sha256:83291145ae4eeef6aaf2c29b81024a4153599a928a91a2226b11bc0500f0bdc8 --workspace @user --yes
+  compozy agent heartbeat sources approve factory-dispatcher deliver --sha256 sha256:61602d59630d0a1c8a80a3a043980377d9dcf50609b7fde4ff610ecc6a85f403 --workspace @user --yes
+  compozy agent heartbeat sources approve factory-auditor due --sha256 sha256:61602d59630d0a1c8a80a3a043980377d9dcf50609b7fde4ff610ecc6a85f403 --workspace @user --yes
   compozy agent heartbeat authority approve factory-auditor --sha256 sha256:2b0861da695cf7e057b3a834381886289338a30372ad21b315ca50ea3db0cf23 --workspace @user --yes
 factory-auditor origin=global
 factory-dispatcher origin=global
 factory-gatekeeper origin=global
 factory-pr-watcher origin=global
+factory-reviewer origin=global
 factory-scribe origin=global
 factory-sentinel origin=global
-workspace scratch ws_a56a7d9e321b4d07
-hash match source factory-dispatcher/deliver sha256:490f2871bed72772c3293287218edf1e53ef33640d298fe3540a37d12d04b874
-hash match source factory-auditor/due sha256:83291145ae4eeef6aaf2c29b81024a4153599a928a91a2226b11bc0500f0bdc8
+workspace scratch ws_e68ee5c553a489e3
+hash match source factory-dispatcher/deliver sha256:61602d59630d0a1c8a80a3a043980377d9dcf50609b7fde4ff610ecc6a85f403
+hash match source factory-auditor/due sha256:61602d59630d0a1c8a80a3a043980377d9dcf50609b7fde4ff610ecc6a85f403
 hash match authority factory-auditor sha256:2b0861da695cf7e057b3a834381886289338a30372ad21b315ca50ea3db0cf23
 
 ## approve: run each command exactly as bin/install printed it (operator, isolated daemon)
-ok: compozy agent heartbeat sources approve factory-dispatcher deliver --sha256 sha256:490f2871bed72772c3293287218edf1e53ef33640d298fe3540a37d12d04b874 --workspace @user --yes
-ok: compozy agent heartbeat sources approve factory-auditor due --sha256 sha256:83291145ae4eeef6aaf2c29b81024a4153599a928a91a2226b11bc0500f0bdc8 --workspace @user --yes
+ok: compozy agent heartbeat sources approve factory-dispatcher deliver --sha256 sha256:61602d59630d0a1c8a80a3a043980377d9dcf50609b7fde4ff610ecc6a85f403 --workspace @user --yes
+ok: compozy agent heartbeat sources approve factory-auditor due --sha256 sha256:61602d59630d0a1c8a80a3a043980377d9dcf50609b7fde4ff610ecc6a85f403 --workspace @user --yes
 ok: compozy agent heartbeat authority approve factory-auditor --sha256 sha256:2b0861da695cf7e057b3a834381886289338a30372ad21b315ca50ea3db0cf23 --workspace @user --yes
 daemon: factory-dispatcher sources approved
 daemon: factory-auditor sources approved
 daemon: factory-auditor authority approved
 
 ## IT-002 attach scratch
-attach by path: bin/attach /tmp/cf-it.IuSMvo/scratch
-attached factory-sentinel     (ainst-e13fd880667c3591)
-attached factory-scribe       (ainst-5ce88d7e538b6d45)
-attached factory-dispatcher   (ainst-e87d2a17b80c5635)
-attached factory-pr-watcher   (ainst-dcd6022dd2f1453f)
-attached factory-gatekeeper   (ainst-ea8bde7fad8de4eb)
-attached factory-auditor      (ainst-378f446f3c9e1ed1)
+attach by path: bin/attach /tmp/cf-it.CntQYm/scratch --allow-unsupported-adapter (no conformance records before the S5 walks)
+warning: adapter signals/newrelic is not supported (conformance record missing); attaching anyway
+warning: adapter code/github is not supported (conformance record missing); attaching anyway
+warning: adapter work/jira is not supported (conformance record missing); attaching anyway
+warning: adapter review/github-app-review is not supported (conformance record missing); attaching anyway
+warning: adapter deploy/github-deployments is not supported (conformance record missing); attaching anyway
+reviewer factory-reviewer origin global layer user file d4ab93813bd5 digest 44759eaa522b (installed)
+attached factory-sentinel     (ainst-6d404b8b0b856352)
+attached factory-scribe       (ainst-0c70dcb814e2287c)
+attached factory-dispatcher   (ainst-368930c0312dc6db)
+attached factory-pr-watcher   (ainst-488d665937d372b0)
+attached factory-gatekeeper   (ainst-740c2d72603cf171)
+attached factory-auditor      (ainst-1c7289071c92b2d3)
 active instances: factory-auditor factory-dispatcher factory-gatekeeper factory-pr-watcher factory-scribe factory-sentinel
 attach by name: bin/attach scratch
+warning: adapter signals/newrelic is not supported (conformance record missing); attaching anyway
+warning: adapter code/github is not supported (conformance record missing); attaching anyway
+warning: adapter work/jira is not supported (conformance record missing); attaching anyway
+warning: adapter review/github-app-review is not supported (conformance record missing); attaching anyway
+warning: adapter deploy/github-deployments is not supported (conformance record missing); attaching anyway
+reviewer factory-reviewer origin global layer user file d4ab93813bd5 digest 44759eaa522b (installed)
 exists factory-sentinel
 exists factory-scribe
 exists factory-dispatcher
@@ -54,12 +75,86 @@ exists factory-auditor
 ## IT-003 migrate vigia-pr memory
 migrated vigia-pr -> factory-pr-watcher (2 lines)
 compozy agent memory inspect factory-pr-watcher:
-Migrated from vigia-pr (scratch) on 2026-11-17
-- 2026-11-17 · scratch · #226 -> sess-abc (round 1)
-- 2026-11-17 · scratch · PRs target the base branch
+Migrated from vigia-pr (scratch) on 2026-11-18
+- 2026-11-18 · scratch · #226 -> sess-abc (round 1)
+- 2026-11-18 · scratch · PRs target the base branch
 old vigia-pr memory still readable
 re-run without --append:
 refused: factory-pr-watcher already has memory; pass --append
 exit 1
 
-## IT-001..IT-003 passed
+## IT-004 gatekeeper tool allowlist (agent policy)
+github-app-review will:
+  • add tool doctor to every profile
+  • add tool merge_gate to every profile
+  • add tool pr_context to every profile
+  • add tool submit_review to every profile
+  • add tool upsert_promotion to every profile
+github-app-review installed from /home/operator/.compozy/extensions/github-app-review (dummy secrets)
+newrelic will:
+  • add tool alert_issues to every profile
+  • add tool doctor to every profile
+  • add tool error_groups to every profile
+  • add tool list_accounts to every profile
+  • add tool mcp_call to every profile
+  • add tool mcp_tools to every profile
+  • add tool nrql_query to every profile
+  • add tool recent_logs to every profile
+  • add tool search_entities to every profile
+  • add mcp_server newrelic to every profile
+  • add mcp_server newrelic-eu to every profile
+newrelic installed from /home/operator/.compozy/extensions/newrelic (dummy secrets)
+factory-gatekeeper compozy__session_prompt: allowed
+factory-gatekeeper compozy__monitor_create: allowed
+factory-gatekeeper compozy__notify: allowed
+factory-gatekeeper compozy__terminal_exec: allowed
+factory-gatekeeper compozy__session_status: allowed
+factory-gatekeeper compozy__worktree_remove: allowed
+factory-gatekeeper ext__github_app_review__merge_gate: allowed
+factory-gatekeeper ext__github_app_review__upsert_promotion: allowed
+factory-gatekeeper ext__newrelic__alert_issues: allowed
+factory-gatekeeper ext__newrelic__doctor: allowed
+factory-gatekeeper ext__newrelic__error_groups: allowed
+factory-gatekeeper ext__newrelic__list_accounts: allowed
+factory-gatekeeper ext__newrelic__mcp_call: allowed
+factory-gatekeeper ext__newrelic__mcp_tools: allowed
+factory-gatekeeper ext__newrelic__nrql_query: allowed
+factory-gatekeeper ext__newrelic__recent_logs: allowed
+factory-gatekeeper ext__newrelic__search_entities: allowed
+factory-gatekeeper ext__github_app_review__submit_review: denied
+factory-gatekeeper ext__github_app_review__pr_context: denied
+all 295 compozy__* native tools allowed
+
+## IT-007 reviewer digest read back by bin/install equals the daemon's semantic digest
+installed.json reviewer 44759eaa522b daemon 44759eaa522b origin global layer user
+ok: factory-reviewer origin global layer user file d4ab93813bd5 digest 44759eaa522b (installed)
+
+## IT-008 two workspaces, one approved deliver source, per-project adapter code
+workspace wsb ws_426e4b98b7702c6e
+adapter    code/github tree f671d7a7c0a5 (SKILL.md, ops.py, sources/deliver.py, sources/due.py); provider matches [roles.code]
+conformance conformance record missing → unsupported; attach needs --allow-unsupported-adapter
+install to /tmp/cf-it.CntQYm/home/factory/adapters/code-github@f671d7a7c0a55ce4e193c806a14b164efbfe786d33d33fc68471d5998e820830, skill factory-code-github-f671d7a7c0a5, and bind (/tmp/cf-it.CntQYm/wsb, code, github)? [y/N] installed  binding (wsb, code, github) → @f671d7a7c0a5, skill factory-code-github-f671d7a7c0a5
+bindings: [('code', 'github', 'factory-code-github-f671d7a7c0a5')]
+scratch (bundled code/github) items: ['issue-1@9']
+wsb (custom adapter) items: ['stub-b']
+scratch: deliver approved with the same sha256 (no new approval) sha256:61602d59630d
+wsb: deliver approved with the same sha256 (no new approval) sha256:61602d59630d
+source_failed: custom adapter code/github changed (tree fefb94f41ba5 ≠ installed f671d7a7c0a5); run bin/install-adapter
+scratch still works: ['issue-1@9']
+adapter    code/github tree fefb94f41ba5 (SKILL.md, ops.py, sources/deliver.py, sources/due.py); provider matches [roles.code]
+conformance conformance record missing → unsupported; attach needs --allow-unsupported-adapter
+install to /tmp/cf-it.CntQYm/home/factory/adapters/code-github@fefb94f41ba53640965a1a40975650bd1b32412ddf415d1d6e7748756f47a947, skill factory-code-github-fefb94f41ba5, and bind (/tmp/cf-it.CntQYm/wsb, code, github)? [y/N] installed  binding (wsb, code, github) → @fefb94f41ba5, skill factory-code-github-fefb94f41ba5
+wsb restored after re-install: ['stub-b']
+
+## IT-009 two workspaces, two digest-qualified user skills for one custom adapter
+workspace wsc ws_8976bb9b2c0d0ed6
+adapter    code/github tree ffbecad954f8 (SKILL.md, ops.py, sources/deliver.py, sources/due.py); provider matches [roles.code]
+conformance conformance record missing → unsupported; attach needs --allow-unsupported-adapter
+install to /tmp/cf-it.CntQYm/home/factory/adapters/code-github@ffbecad954f829f30f398286154c086632abddd94705dab9eda2af2ff75224cc, skill factory-code-github-ffbecad954f8, and bind (/tmp/cf-it.CntQYm/wsc, code, github)? [y/N] installed  binding (wsc, code, github) → @ffbecad954f8, skill factory-code-github-ffbecad954f8
+wsb: ok: skill factory-code-github-fefb94f41ba5 path /tmp/cf-it.CntQYm/home/skills/factory-code-github-fefb94f41ba5/SKILL.md
+daemon resolves factory-code-github-fefb94f41ba5 from user /tmp/cf-it.CntQYm/home/skills/factory-code-github-fefb94f41ba5
+wsc: ok: skill factory-code-github-ffbecad954f8 path /tmp/cf-it.CntQYm/home/skills/factory-code-github-ffbecad954f8/SKILL.md
+daemon resolves factory-code-github-ffbecad954f8 from user /tmp/cf-it.CntQYm/home/skills/factory-code-github-ffbecad954f8
+provider effect recorded: {'op': 'issue_comment', 'args': ['7', 'hello']}
+
+## IT-001..IT-004, IT-007..IT-009 passed

@@ -8,12 +8,18 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 
+sys.dont_write_bytecode = True  # adapter trees refuse compiled Python (F-3); importing their modules must not add any
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "bin"))
+NEWRELIC_TOML = 'app = "acme-api-prod"\naccount_id = 1234567\n'
+NO_COMPOZY = Path(tempfile.mkdtemp(prefix="no-compozy-"))
+(NO_COMPOZY / "compozy").write_text("#!/bin/sh\necho 'no compozy in unit tests' >&2\nexit 1\n")
+(NO_COMPOZY / "compozy").chmod(0o755)
 
 FAKE = r'''#!/usr/bin/env python3
 import json, os, sys
@@ -47,6 +53,27 @@ if cmd == ["agent", "instance", "archive"]:
     out({})
 if cmd == ["agent", "heartbeat", "sources"]:
     out({"scripts": state["scripts"].get(args[3], [])})
+if cmd == ["agent", "info", "factory-reviewer"]:
+    info = state["agent_info"]
+    if info is None:  # like the daemon: the installed user-level file, digest from its content
+        import hashlib
+        path = os.path.join(os.environ["COMPOZY_HOME"], "agents", "factory-reviewer", "AGENT.md")
+        if not os.path.isfile(path):
+            print('{"error":"agent_not_found"}', file=sys.stderr)
+            sys.exit(1)
+        info = {"origin": "global", "layer": "user",
+                "definition_digest": hashlib.sha256(open(path, "rb").read()).hexdigest()}
+    if isinstance(info, list):  # a sequence: each call reads the next answer, the last one repeats
+        info = info.pop(0) if len(info) > 1 else info[0]
+    if "error" in info:  # the daemon did not answer
+        json.dump(state, open(state_path, "w"))
+        print(json.dumps(info), file=sys.stderr)
+        sys.exit(1)
+    out(info)
+if args[:2] == ["skill", "info"]:
+    name = args[2]
+    out(state["skills"].get(name) or {"name": name, "source": "user",
+                                      "path": os.path.join(os.environ["COMPOZY_HOME"], "skills", name)})
 if cmd == ["agent", "memory", "inspect"]:
     out({"content": state["memory"].get(args[3], ""), "digest": "digest-" + args[3]})
 if cmd == ["agent", "memory", "write"]:
@@ -62,7 +89,7 @@ sys.exit(2)
 def repo(tmp_path):
     """A copy of the repo so tests can change agent files without touching the checkout."""
     dest = tmp_path / "repo"
-    for part in ("agents", "tools", "bin"):
+    for part in ("agents", "tools", "bin", "skills", "contracts"):
         shutil.copytree(REPO / part, dest / part, ignore=shutil.ignore_patterns("__pycache__"))
     return dest
 
@@ -83,7 +110,8 @@ class FakeCompozy:
         exe.chmod(0o755)
         self.state_path, self.log_path = tmp_path / "state.json", tmp_path / "calls.jsonl"
         self.log_path.write_text("")
-        self.state = {"root": "", "instances": [], "scripts": {}, "memory": {}}
+        self.state = {"root": "", "instances": [], "scripts": {}, "memory": {}, "skills": {},
+                      "agent_info": None}
         self.save()
 
     def save(self):
@@ -98,7 +126,7 @@ class FakeCompozy:
         return [json.loads(line) for line in self.log_path.read_text().splitlines()]
 
     def env(self):
-        return {"PATH": f"{self.dir}{os.pathsep}{os.environ['PATH']}",
+        return {"PATH": f"{self.dir}{os.pathsep}{os.environ['PATH']}", "FACTORY_READBACK_TIMEOUT": "2",
                 "FAKE_COMPOZY_STATE": str(self.state_path), "FAKE_COMPOZY_LOG": str(self.log_path)}
 
 
@@ -109,6 +137,7 @@ def fake(tmp_path):
 
 def run(script, *args, env=None, repo_root=REPO, stdin=None):
     full_env = {k: v for k, v in os.environ.items() if not k.startswith("COMPOZY_")}
+    full_env["PATH"] = f"{NO_COMPOZY}{os.pathsep}{full_env['PATH']}"  # never the real CLI unless faked
     full_env.update(env or {})
     return subprocess.run([str(repo_root / "bin" / script), *args], capture_output=True, text=True,
                           env=full_env, input=stdin)
@@ -116,8 +145,25 @@ def run(script, *args, env=None, repo_root=REPO, stdin=None):
 
 @pytest.fixture
 def workspace(tmp_path):
-    """A project root with a valid factory.toml copied from factory.example.toml."""
+    """A project root with a valid factory.toml copied from factory.example.toml and its .compozy/newrelic.toml."""
     root = tmp_path / "acme-api"
     (root / ".compozy" / "factory").mkdir(parents=True)
     shutil.copy(REPO / "factory.example.toml", root / ".compozy" / "factory" / "factory.toml")
+    (root / ".compozy" / "newrelic.toml").write_text(NEWRELIC_TOML)
     return root
+
+
+@pytest.fixture
+def home_env(fake, home):
+    """Env for scripts writing to `home` with the fake compozy first on PATH."""
+    return {**fake.env(), "COMPOZY_HOME": str(home)}
+
+
+@pytest.fixture
+def installed(fake, home):
+    """Env for scripts after a real bin/install into `home` (agents, tools, adapters, reviewer digest read back):
+    fake compozy first on PATH and COMPOZY_HOME set."""
+    env = {**fake.env(), "COMPOZY_HOME": str(home)}
+    proc = run("install", env=env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    return env

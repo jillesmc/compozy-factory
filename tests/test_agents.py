@@ -33,8 +33,8 @@ def input_block(text):
     return match.group(1).splitlines() if match else None
 
 
-def test_ut_020_installed_files_carry_no_project_literals(home):
-    proc = run("install", env={"COMPOZY_HOME": str(home)})
+def test_ut_020_installed_files_carry_no_project_literals(home, home_env):
+    proc = run("install", env=home_env)
     assert proc.returncode == 0, proc.stderr
     hits = []
     for path in sorted(p for p in home.rglob("*") if p.is_file()):
@@ -100,17 +100,17 @@ def run_source(path, cwd, stdin="{}"):
     return subprocess.run([sys.executable, str(path)], cwd=cwd, input=stdin, capture_output=True, text=True)
 
 
-def test_sources_read_only_new_keys(tmp_path):
+def test_code_github_sources_read_only_role_keys(tmp_path):
     conf = tmp_path / ".compozy" / "factory"
     conf.mkdir(parents=True)
-    (conf / "factory.toml").write_text('[autorizacao]\nautores = ["x"]\n[repo]\ngithub = "acme/acme-api"\n')
-    deliver = REPO / "agents" / "factory-dispatcher" / "sources" / "deliver"
-    proc = run_source(deliver, tmp_path)
+    (conf / "factory.toml").write_text('[autorizacao]\nautores = ["x"]\n[roles.code.github]\nrepo = "acme/acme-api"\n')
+    sources = REPO / "skills" / "factory-code-github" / "sources"
+    proc = run_source(sources / "deliver.py", tmp_path)
     assert proc.returncode == 1
     assert "refused: factory.toml missing [authorization] authors" in proc.stderr
-    (conf / "factory.toml").write_text("[language]\nposts = 'en'\n")
-    proc = run_source(REPO / "agents" / "factory-auditor" / "sources" / "due", tmp_path)
-    assert proc.returncode == 1 and "refused: factory.toml missing [repo] github" in proc.stderr
+    (conf / "factory.toml").write_text("[language]\nposts = 'en'\n[repo]\ngithub = 'acme/acme-api'\n")
+    proc = run_source(sources / "due.py", tmp_path)
+    assert proc.returncode == 1 and "refused: factory.toml missing [roles.code.github] repo" in proc.stderr
 
 
 def test_ut_047_no_admin_bypass_in_any_agent():  # US-006.AC-3, BR-9, Safety Invariant 5

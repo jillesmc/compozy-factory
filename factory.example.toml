@@ -1,9 +1,13 @@
 # Factory configuration for one project. Copy to <project>/.compozy/factory/factory.toml and edit.
-# Changes go through PRs: git history is the audit trail. The factory agents read only these keys
-# and refuse with `refused: factory.toml missing <key>` when one they need is absent.
+# Changes go through PRs: git history is the audit trail (this file is a protected path).
+# Each role names its provider; [roles.<role>.<provider>] holds that provider's values, validated by
+# the adapter's schema (skills/factory-<role>-<provider>/SKILL.md). A missing or unknown key refuses
+# with `refused: factory.toml missing [roles.<role>.<provider>] <key>` before any CompozyOS call.
+# Security policy (allowed repos, delivery base, promotion pair, approvers) is never read from here:
+# it lives in the github-app-review operator policy file.
 
 [language]
-posts = "pt-BR"                      # language of issues, comments and Jira text the agents write
+posts = "pt-BR"                      # language of issues, comments and work items the agents write
                                      # supported: "pt-BR", "en" (factory_intake.py has text for these only)
 
 [authorization]
@@ -16,65 +20,75 @@ authors = ["octocat"]
 agents = ["factory-sentinel", "factory-scribe", "factory-dispatcher",
           "factory-pr-watcher", "factory-gatekeeper", "factory-auditor"]
 
-[repo]
-github = "acme/acme-api"
-base = "develop"          # delivery PRs target this branch
-release = "main"          # default branch; a merge here is a deploy
-merge = "merge"           # merge commit only; squash/rebase break the promotion train
-
-[review]
-# PR review by the GitHub App: the factory-pr-watcher starts one on-demand `agent` session per PR head,
-# which reviews through the `extension` tools. `repo` must equal [repo] github. Never list `agent` in [team].
-extension = "github-app-review"
-repo = "acme/acme-api"
-agent = "factory-reviewer"
-
-[ci]
-# Rule every changed workflow must follow (`runs-on:` value).
-runner = "self-hosted-${{ github.run_id }}"
-
-[deploy]
-environment = "production"   # optional: GitHub Deployments environment of the release; default [repo] release
-
-[newrelic]
-account_id = 1234567           # account of every NRQL the agents run; set the same as NEW_RELIC_ACCOUNT_ID for sources
-app_name = "acme-api-prod"     # also set as NEW_RELIC_APP for the workspace (sources)
-
 [runtime]
 # Executor session the dispatcher creates for each delivery.
 executor = { agent = "code_implementer", provider = "claude", model = "claude-opus-5-5", reasoning_effort = "high" }
 
-[jira]
+[roles.signals]
+provider = ["newrelic"]                       # the only role that takes a list
+# adapters = { newrelic = "path/to/SKILL.md" } # optional custom adapter per provider (bin/install-adapter)
+
+[roles.signals.newrelic]
+# The newrelic extension owns this per-project file (app = "<New Relic app>", account_id = <account>).
+config = ".compozy/newrelic.toml"
+
+[roles.code]
+provider = "github"
+
+[roles.code.github]
+repo = "acme/acme-api"
+base = "develop"          # delivery PRs target this branch
+release = "main"          # default branch; a merge here is a deploy
+merge = "merge"           # merge commit only; squash/rebase break the promotion train
+ci_runner = "self-hosted-${{ github.run_id }}"   # rule every changed workflow must follow (`runs-on:`)
+
+[roles.work]
+provider = "jira"         # or "github": the issue itself is the work item
+# adapter = "path/to/SKILL.md"
+
+[roles.work.jira]
 site = "acme.atlassian.net"
 project = "ACME"
 assets_workspace = "00000000-0000-0000-0000-000000000000"
 # issuetype per kind of work
 issuetype = { bugfix = "10004", feature = "10008" }
 
-# Fields the transitions require. The factory-scribe fills them on creation; the
-# factory-gatekeeper checks (and fixes) them before Done.
-[jira.fields]
+# Fields the transitions require. The work adapter fills them from the issue's facts at creation
+# and repairs them before Done.
+[roles.work.jira.fields]
 documentacao_anexa   = "customfield_10001"  # select: yes / no
 utilizacao_ia        = "customfield_10002"  # select: yes / no
-tipo_atividade       = "customfield_10003"  # select, see [jira.tipo_atividade]
-qual_tipo_de_valor   = "customfield_10004"  # Assets, see [jira.tipo_de_valor]
-plataformas_afetadas = "customfield_10005"  # Assets, see [jira.plataformas]
+tipo_atividade       = "customfield_10003"  # select, see [roles.work.jira.tipo_atividade]
+qual_tipo_de_valor   = "customfield_10004"  # Assets, see [roles.work.jira.tipo_de_valor]
+plataformas_afetadas = "customfield_10005"  # Assets, see [roles.work.jira.plataformas]
 
-[jira.defaults]
-documentacao_anexa = "20001"   # "no"; the factory-scribe picks the "yes" option when the issue came with a document
+[roles.work.jira.defaults]
+documentacao_anexa = "20001"   # "no"; the "yes" option is used when the issue came with a document
 utilizacao_ia = "20002"        # "yes": the team is agents
 
-[jira.tipo_atividade]
+[roles.work.jira.tipo_atividade]
 bugfix = "30001"
 feature = "30002"
 
-[jira.tipo_de_valor]
-# Assets objectKeys (sent as full objects, see the factory-scribe).
+[roles.work.jira.tipo_de_valor]
+# Assets objectKeys (sent as full objects by the work adapter).
 padrao = "KEY-1001"
 instrumentacao = "KEY-1002"
 
-[jira.plataformas]
+[roles.work.jira.plataformas]
 # Assets objectKeys.
 padrao = ["KEY-2001"]
 achado_newrelic = "KEY-2002"   # added when the finding came from New Relic
 ci = "KEY-2003"                # added when the PR touches .github/workflows
+
+[roles.review]
+provider = "github-app-review"
+
+[roles.review.github-app-review]
+# no keys: the reviewer is always the user-level factory-reviewer (not repository-configurable)
+
+[roles.deploy]
+provider = "github-deployments"
+
+[roles.deploy.github-deployments]
+environment = "main"      # optional: GitHub Deployments environment of the release; default [roles.code.github] release

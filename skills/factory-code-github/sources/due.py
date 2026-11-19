@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""Check-in source: closed factory issues whose post-deploy audit is due.
+
+One item per issue that is closed as completed, carries a factory/fabrica
+fingerprint, and has no final audit verdict yet. The deploy time is the latest
+`<!-- factory-deploy: ISO -->` comment marker (written by the factory-gatekeeper), else the
+issue's closed_at. Each audit window is WINDOW_DAYS long; an `inconclusive`
+verdict pushes the next attempt one window later, up to MAX_ATTEMPTS.
+
+Verdict markers (written by the factory-auditor in an issue comment):
+    <!-- factory-audit: confirmed -->
+    <!-- factory-audit: regressed -->
+    <!-- factory-audit: inconclusive -->
+Only verdicts posted after the current deploy marker count, so a new deploy of a
+reopened issue starts a fresh audit.
+
+Read-only: GitHub REST GETs through the operator's keyring `gh` login.
+Contract: CompozyOS check-in source v1 (JSON on stdin, {"items": [...]} on stdout), run by the
+provider-neutral factory-dispatcher/factory-auditor source after its tree-digest check.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import tomllib
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+WINDOW_DAYS = 7
+MAX_ATTEMPTS = 3
+LOOKBACK_DAYS = 60
+FINGERPRINT = re.compile(r"(?:factory|fabrica)-fingerprint: (\w+)")
+DEPLOY = re.compile(r"<!-- factory-deploy: (\S+) -->")
+AUDIT = re.compile(r"<!-- factory-audit: (confirmed|regressed|inconclusive) -->")
+
+
+def factory_value(section, key):
+    """Read one factory.toml value (`section` may be dotted); sources run with the workspace root as cwd."""
+    path = Path(".compozy/factory/factory.toml")
+    if not path.is_file():
+        raise RuntimeError(f"refused: {path} missing")
+    value = tomllib.loads(path.read_text())
+    for part in section.split("."):
+        value = value.get(part, {}) if isinstance(value, dict) else {}
+    value = value.get(key) if isinstance(value, dict) else None
+    if value in (None, "", []):
+        raise RuntimeError(f"refused: factory.toml missing [{section}] {key}")
+    return value
+
+
+def gh(path):
+    env = {k: v for k, v in os.environ.items() if k != "GH_TOKEN"}
+    proc = subprocess.run(["gh", "api", "--paginate", "--slurp", path],
+                          capture_output=True, text=True, timeout=25, env=env)
+    if proc.returncode != 0:
+        raise RuntimeError(f"gh api {path}: {proc.stderr.strip()[:300]}")
+    return [e for page in json.loads(proc.stdout or "[]") for e in page]
+
+
+def ts(value):
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def audit_state(issue, comments, now):
+    """Return the due item for one issue, or None when nothing is due."""
+    fps = FINGERPRINT.findall(issue.get("body") or "")
+    if not fps or issue.get("state_reason") != "completed":
+        return None
+    marks = [ts(m) for c in comments for m in DEPLOY.findall(c.get("body") or "")]
+    deploy = max(marks) if marks else ts(issue["closed_at"])
+    verdicts = [v for c in comments if ts(c["created_at"]) > deploy
+                for v in AUDIT.findall(c.get("body") or "")]
+    if "confirmed" in verdicts or "regressed" in verdicts:
+        return None
+    attempt = verdicts.count("inconclusive") + 1
+    if attempt > MAX_ATTEMPTS:
+        return None
+    due_at = deploy + timedelta(days=WINDOW_DAYS * attempt)
+    if now < due_at:
+        return None
+    return {
+        "key": f"issue-{issue['number']}@{deploy.strftime('%Y%m%dT%H%M%SZ')}-a{attempt}",
+        "title": (issue.get("title") or f"#{issue['number']}")[:200],
+        "url": issue.get("html_url", ""),
+        "attributes": {
+            "number": issue["number"],
+            "deploy_at": deploy.isoformat().replace("+00:00", "Z"),
+            "window_days": WINDOW_DAYS * attempt,
+            "attempt": attempt,
+            "max_attempts": MAX_ATTEMPTS,
+            "fingerprints": fps[:4],
+        },
+    }
+
+
+def main():
+    raw = sys.stdin.read()
+    request = json.loads(raw) if raw.strip() else {}
+    repo = factory_value("roles.code.github", "repo")
+    max_items = int((request.get("limits") or {}).get("max_items") or 20)
+    now = ts(request["now"]) if request.get("now") else datetime.now(timezone.utc)
+    since = (now - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    issues = [i for i in gh(f"repos/{repo}/issues?state=closed&labels=factory&since={since}&per_page=100")
+              if "pull_request" not in i]
+    items = []
+    for issue in sorted(issues, key=lambda i: i["number"]):
+        if not FINGERPRINT.search(issue.get("body") or "") or issue.get("state_reason") != "completed":
+            continue
+        comments = gh(f"repos/{repo}/issues/{issue['number']}/comments?per_page=100")
+        item = audit_state(issue, comments, now)
+        if item:
+            items.append(item)
+    result = {"items": items[:max_items]}
+    if len(items) > max_items:
+        result["more"] = True
+    json.dump(result, sys.stdout)
+    sys.stdout.write("\n")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as exc:
+        print(f"due: {exc}", file=sys.stderr)
+        sys.exit(1)

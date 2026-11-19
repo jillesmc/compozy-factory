@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Create one always-on instance per factory agent in a workspace.
 
-Usage: bin/attach <workspace> [--agents a,b]
+Usage: bin/attach <workspace> [--agents a,b] [--allow-unsupported-adapter]
 
 <workspace> is a CompozyOS workspace name, ID or path. Refuses before any CompozyOS call when
-<root>/.compozy/factory/factory.toml is missing or lacks a required key. Agents come from
+<root>/.compozy/factory/factory.toml is missing or invalid (role grammar, adapter schemas, BR-17).
+Then, before creating anything: every configured (role, provider) must resolve to an installed adapter
+(custom ones through a valid bin/install-adapter binding) whose conformance record matches the
+installed tree (BR-11; --allow-unsupported-adapter attaches anyway with a warning), and
+factory-reviewer must pass `factory_guard.py reviewer` (BR-16). Agents come from
 factory.toml [team] agents (default: all six) unless --agents narrows them. On-demand agents
 (factory-reviewer) are never attached: they are reported `skipped <agent> (on-demand)`. An agent whose
 source script is not approved is refused with the approve command; the others still attach.
@@ -21,11 +25,27 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("workspace")
     parser.add_argument("--agents", help="comma-separated subset of factory agents")
+    parser.add_argument("--allow-unsupported-adapter", action="store_true",
+                        help="attach even when an adapter has no passing conformance record")
     args = parser.parse_args()
 
-    _, conf = fl.load_factory_toml(fl.workspace_root(args.workspace))
+    root = fl.workspace_root(args.workspace)
+    _, conf = fl.load_factory_toml(root)
     agents = [a.strip() for a in args.agents.split(",") if a.strip()] if args.agents else fl.team(conf)
     ws = args.workspace
+    try:
+        for (role, provider), (src, _, custom) in fl.adapters(root, conf).items():
+            name, installed = fl.resolve(root, role, provider, conf)
+            fl.check_skill(name, installed)
+            ok, reason = fl.conformance(role, provider, fl.record_path(role, provider, src, custom), installed)
+            if ok:
+                continue
+            if not args.allow_unsupported_adapter:
+                fl.refuse(f"adapter {role}/{provider} is not supported ({reason}); pass --allow-unsupported-adapter")
+            print(f"warning: adapter {role}/{provider} is not supported ({reason}); attaching anyway")
+        print(f"reviewer {fl.reviewer(ws)}")
+    except fl.Refused as exc:
+        fl.refuse(str(exc))
 
     listed = fl.compozy("agent", "instance", "list", "--workspace", ws, "--limit", "100")
     existing = {i["agent_name"] for i in listed.get("instances", []) if i.get("state") != "archived"}

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# IT-001..IT-004 against a real, isolated CompozyOS daemon.
+# IT-001..IT-004 (factory-user-agents) and IT-007..IT-009 (factory-roles) against a real, isolated
+# CompozyOS daemon.
 #
 # Starts a throwaway daemon with its own COMPOZY_HOME, HTTP port and socket, runs the real
 # bin/install, bin/attach and bin/migrate-memory against it, checks the gatekeeper's tool allowlist, and stops it on exit. Every CLI call
@@ -98,14 +99,15 @@ cz agent heartbeat authority show factory-auditor --workspace scratch -o json | 
 
 step "IT-002 attach scratch"
 cp "$REPO/factory.example.toml" "$SCRATCH/.compozy/factory/factory.toml"
-echo "attach by path: bin/attach $SCRATCH"
-iso "$REPO/bin/attach" "$SCRATCH"
+printf 'app = "acme-api-prod"\naccount_id = 1234567\n' > "$SCRATCH/.compozy/newrelic.toml"
+echo "attach by path: bin/attach $SCRATCH --allow-unsupported-adapter (no conformance records before the S5 walks)"
+iso "$REPO/bin/attach" "$SCRATCH" --allow-unsupported-adapter
 cz agent instance list --workspace scratch -o json | json '
 act = sorted(i["agent_name"] for i in d["instances"] if i["state"] == "active")
 print("active instances:", " ".join(act))
 assert act == sorted(["factory-sentinel", "factory-scribe", "factory-dispatcher", "factory-pr-watcher", "factory-gatekeeper", "factory-auditor"]), act'
 echo "attach by name: bin/attach scratch"
-iso "$REPO/bin/attach" scratch | tee "$T/attach2.out"
+iso "$REPO/bin/attach" scratch --allow-unsupported-adapter | tee "$T/attach2.out"
 [ "$(grep -c '^exists factory-' "$T/attach2.out")" = 6 ] || { echo "attach by name did not see the six instances"; exit 1; }
 
 step "IT-003 migrate vigia-pr memory"
@@ -185,4 +187,101 @@ natives = [t for t in pol if t.startswith("compozy__")]
 assert natives and all(pol[t] == "allowed" for t in natives), "compozy__* must allow every native tool"
 print(f"all {len(natives)} compozy__* native tools allowed")'
 
-step "IT-001..IT-004 passed"
+step "IT-007 reviewer digest read back by bin/install equals the daemon's semantic digest"
+python3 - "$HOME_DIR/factory/installed.json" "$(cz agent info factory-reviewer --workspace scratch -o json)" <<'EOF'
+import json, sys
+rec = json.load(open(sys.argv[1]))["reviewer"]
+info = json.loads(sys.argv[2])
+print("installed.json reviewer", rec["definition_digest"][:12], "daemon", info["definition_digest"][:12],
+      "origin", info["origin"], "layer", info.get("layer"))
+assert rec["definition_digest"] == info["definition_digest"], "recorded digest is the daemon's"
+assert (info["origin"], info.get("layer")) == ("global", "user")
+EOF
+iso python3 "$HOME_DIR/factory/tools/factory_guard.py" reviewer scratch | tee "$T/guard.out"
+grep -q '^ok: factory-reviewer origin global layer user' "$T/guard.out"
+
+# Shared fixtures for IT-008/IT-009: a fake `gh` for the bundled code/github adapter, a custom code
+# adapter (a copy of code/github with a stub deliver.py and an ops.py that records provider effects),
+# and a pty so bin/install-adapter sees an operator at the terminal.
+mkdir -p "$T/fakebin"
+cat > "$T/fakebin/gh" <<'EOF'
+#!/usr/bin/env python3
+import json, sys
+path = sys.argv[-1]
+if "/events" in path:
+    page = [{"id": 9, "event": "labeled", "label": {"name": "factory:deliver"}, "actor": {"login": "octocat"},
+             "created_at": "2026-11-19T00:00:00Z"}]
+else:
+    page = [{"number": 1, "title": "github item", "html_url": "u", "labels": [{"name": "factory:deliver"}]}]
+print(json.dumps([page]))
+EOF
+chmod +x "$T/fakebin/gh"
+stub_adapter() {  # $1 dir, $2 marker that makes the tree digest unique
+  rm -rf "$1"; cp -r "$REPO/skills/factory-code-github" "$1"; rm -rf "$1/sources/__pycache__"
+  printf 'import json, sys\nprint(json.dumps({"items": [{"key": "stub-%s", "title": "stub item"}]}))\n' "$2" > "$1/sources/deliver.py"
+  printf 'import json, os, sys\nwith open(os.environ["STUB_TRACE"], "a") as f:\n    f.write(json.dumps({"op": sys.argv[1], "args": sys.argv[2:]}) + "\\n")\n' > "$1/ops.py"
+  printf '\nStub provider: `code.issue_comment` is `python3 <installed adapter>/ops.py issue_comment <n> <markdown>` (%s).\n' "$2" >> "$1/SKILL.md"
+}
+new_ws() {  # $1 dir, $2 name, $3 adapter dir
+  mkdir -p "$1/.compozy/factory"
+  sed "s#^provider = \"github\"\$#provider = \"github\"\nadapter = \"$3\"#" "$REPO/factory.example.toml" > "$1/.compozy/factory/factory.toml"
+  printf 'app = "acme-api-prod"\naccount_id = 1234567\n' > "$1/.compozy/newrelic.toml"
+  cz workspace add "$1" --name "$2" -o json | json 'print("workspace", d["name"], d["id"])'
+}
+tty_install() {  # bin/install-adapter with a pseudo-terminal on stdin answering y
+  iso python3 - "$REPO/bin/install-adapter" "$@" <<'EOF'
+import os, pty, subprocess, sys
+master, slave = pty.openpty()
+proc = subprocess.Popen(sys.argv[1:], stdin=slave)
+os.close(slave); os.write(master, b"y\n"); sys.exit(proc.wait())
+EOF
+}
+poll() {  # run the installed provider-neutral deliver exactly as the daemon does: cwd = workspace root, JSON stdin
+  (cd "$1" && echo '{"limits": {"max_items": 20}}' | iso env PATH="$T/fakebin:$PATH" "$HOME_DIR/agents/factory-dispatcher/sources/deliver")
+}
+
+step "IT-008 two workspaces, one approved deliver source, per-project adapter code"
+WSB=$T/wsb
+stub_adapter "$T/adapter-b" b
+new_ws "$WSB" wsb "$T/adapter-b"
+approved_before=$(cz agent heartbeat sources factory-dispatcher --workspace scratch -o json | json 'print(next(s["sha256"] for s in d["scripts"] if s["name"] == "deliver"))')
+tty_install code "$T/adapter-b" --workspace wsb
+python3 -c "import json; b = json.load(open('$HOME_DIR/factory/bindings.json'))['bindings']; print('bindings:', [(x['role'], x['provider'], x['skill']) for x in b])"
+poll "$SCRATCH" | tee "$T/poll-a.json" | json 'assert [i["key"] for i in d["items"]] == ["issue-1@9"], d; print("scratch (bundled code/github) items:", [i["key"] for i in d["items"]])'
+poll "$WSB" | json 'assert [i["key"] for i in d["items"]] == ["stub-b"], d; print("wsb (custom adapter) items:", [i["key"] for i in d["items"]])'
+for ws in scratch wsb; do
+  cz agent heartbeat sources factory-dispatcher --workspace "$ws" -o json | json '
+s = next(s for s in d["scripts"] if s["name"] == "deliver")
+assert s["approved"] and s["sha256"] == "'"$approved_before"'", s
+print("'"$ws"': deliver approved with the same sha256 (no new approval)", s["sha256"][:19])'
+done
+echo "# one byte" >> "$T/adapter-b/sources/deliver.py"
+if poll "$WSB" 2> "$T/poll-b.err"; then echo "changed custom adapter still ran"; exit 1; fi
+cat "$T/poll-b.err"; grep -q '^source_failed: custom adapter code/github changed .*run bin/install-adapter' "$T/poll-b.err"
+poll "$SCRATCH" | json 'assert d["items"]; print("scratch still works:", [i["key"] for i in d["items"]])'
+tty_install code "$T/adapter-b" --workspace wsb
+poll "$WSB" | json 'assert [i["key"] for i in d["items"]] == ["stub-b"], d; print("wsb restored after re-install:", [i["key"] for i in d["items"]])'
+
+step "IT-009 two workspaces, two digest-qualified user skills for one custom adapter"
+WSC=$T/wsc
+stub_adapter "$T/adapter-c" c
+new_ws "$WSC" wsc "$T/adapter-c"
+tty_install code "$T/adapter-c" --workspace wsc
+for ws in wsb wsc; do
+  skill=$(python3 -c "import json; print(next(b['skill'] for b in json.load(open('$HOME_DIR/factory/bindings.json'))['bindings'] if b['root'].endswith('/$ws')))")
+  for _ in $(seq 1 30); do  # the daemon discovers new user skills asynchronously
+    cz skill info "$skill" --workspace "$ws" -o json 2>/dev/null | grep -q '"source": "user"' && break; sleep 1
+  done
+  line=$(iso python3 "$HOME_DIR/factory/tools/factory_guard.py" adapter code github "$ws") || { echo "$ws: $line"; exit 1; }
+  echo "$ws: $line"
+  cz skill info "$skill" --workspace "$ws" -o json | json '
+assert d["source"] == "user" and d["path"] == "'"$HOME_DIR/skills/$skill"'", d
+print("daemon resolves", d["name"], "from", d["source"], d["path"])'
+  echo "$skill" >> "$T/skills"
+done
+[ "$(sort -u "$T/skills" | wc -l)" = 2 ] || { echo "expected two distinct skills"; exit 1; }
+installed_c=$(python3 -c "import json; print(next(b['installed'] for b in json.load(open('$HOME_DIR/factory/bindings.json'))['bindings'] if b['root'].endswith('/wsc')))")
+(cd "$WSC" && iso env STUB_TRACE="$T/trace.jsonl" python3 "$installed_c/ops.py" issue_comment 7 "hello")
+json 'print("provider effect recorded:", d)' < "$T/trace.jsonl"
+
+step "IT-001..IT-004, IT-007..IT-009 passed"

@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
-"""Copy agents/factory-* and tools/ into $COMPOZY_HOME (default ~/.compozy).
+"""Copy agents/factory-*, tools/ and the bundled adapters into $COMPOZY_HOME (default ~/.compozy).
 
 Usage: bin/install [--dry-run] [--prune]
 
-Writes only $COMPOZY_HOME/agents/factory-* and $COMPOZY_HOME/factory/. Idempotent: an unchanged
-file is never rewritten. Prints the approval commands for source scripts and authority blocks
-that changed, with the hashes the daemon will demand.
+Writes only $COMPOZY_HOME/agents/factory-*, $COMPOZY_HOME/skills/factory-<role>-<provider>/ and
+$COMPOZY_HOME/factory/. Idempotent: an unchanged file is never rewritten. Prints the approval commands
+for source scripts and authority blocks that changed, with the hashes the daemon will demand.
+
+Each adapter skills/factory-<role>-<provider>/ is copied to factory/adapters/<role>-<provider>/ and its
+SKILL.md to the user skill root. factory/installed.json records every adapter tree digest and the
+factory-reviewer digest read back from the daemon (BR-16): after copying, `compozy agent info
+factory-reviewer` is read until it reports a user-level global definition (and, when AGENT.md changed,
+a digest other than the pre-install one), for at most 30 s; otherwise install fails and keeps the
+previous record.
 """
 import argparse
+import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -64,6 +73,35 @@ def symlinks(paths):
     return None
 
 
+def read_back_reviewer(pre, changed):
+    """The daemon's semantic definition digest of the just-installed reviewer, or raise RuntimeError."""
+    deadline = time.monotonic() + float(os.environ.get("FACTORY_READBACK_TIMEOUT", "30"))
+    while True:
+        try:
+            info = fl.compozy("agent", "info", fl.ON_DEMAND[0])
+            digest = info.get("definition_digest")
+            if info.get("origin") != "global" or info.get("layer", "user") != "user":
+                raise RuntimeError(f"factory-reviewer resolves to origin {info.get('origin')} layer "
+                                   f"{info.get('layer')} (expected global, user)")
+            if digest and not (changed and digest == pre):
+                return digest
+            last = f"daemon still reports digest {fl.short(digest)}"
+        except RuntimeError as exc:
+            if "expected global, user" in str(exc):
+                raise
+            last = str(exc)
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"factory-reviewer digest not read back ({last})")
+        time.sleep(0.5)
+
+
+def reviewer_digest():
+    try:
+        return fl.compozy("agent", "info", fl.ON_DEMAND[0]).get("definition_digest")
+    except RuntimeError:
+        return None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dry-run", action="store_true", help="report without writing")
@@ -77,9 +115,13 @@ def main():
                          key=lambda p: (order.get(p.name, len(order)), p.name))
     names = {p.name for p in repo_agents}
     installed = sorted(agents_home.glob("factory-*")) if agents_home.is_dir() else []
+    adapters = {(r, p): d for (r, p), d in sorted(fl.bundled_adapters().items())}
+    adapter_dests = [(home / "factory" / "adapters" / f"{r}-{p}", home / "skills" / f"factory-{r}-{p}")
+                     for r, p in adapters]
 
-    bad = next((p for p in (agents_home, home / "factory") if p.is_symlink()), None) or symlinks(
-        [agents_home / p.name for p in repo_agents] + installed + [tools_home])
+    bad = next((p for p in (agents_home, home / "factory", home / "skills") if p.is_symlink()), None) or symlinks(
+        [agents_home / p.name for p in repo_agents] + installed + [tools_home]
+        + [path for pair in adapter_dests for path in pair])
     if bad:
         fl.refuse(f"{bad} is a symlink (symlink_not_supported)")
 
@@ -108,6 +150,35 @@ def main():
     lines.append(f"{status} tools ({listed})" if status != "unchanged" else "unchanged tools")
     actions.append((files, tools_home, writes, removals))
 
+    record = fl.installed_record(home)
+    new_record = {"adapters": {}, "reviewer": record.get("reviewer")}
+    for ((role, provider), src), (dest, skill_dest) in zip(adapters.items(), adapter_dests):
+        files = wanted(src)
+        writes, removals = plan(files, dest)
+        skill = {Path("SKILL.md"): src / "SKILL.md"}
+        skill_writes, skill_removals = plan(skill, skill_dest)
+        tree = fl.tree_digest(src)
+        new_record["adapters"][f"{role}-{provider}"] = {"tree": tree, "skill": f"factory-{role}-{provider}"}
+        changed = writes or removals or skill_writes or skill_removals
+        status = "installed" if not dest.exists() else "updated" if changed else "unchanged"
+        lines.append(f"{status} adapter {role}-{provider} tree {fl.short(tree)}")
+        actions += [(files, dest, writes, removals), (skill, skill_dest, skill_writes, skill_removals)]
+
+    reviewer_src = fl.REPO_ROOT / "agents" / fl.ON_DEMAND[0] / "AGENT.md"
+    reviewer_dest = agents_home / fl.ON_DEMAND[0] / "AGENT.md"
+    reviewer_changed = not reviewer_dest.is_file() or reviewer_dest.read_bytes() != reviewer_src.read_bytes()
+    pre = None
+    if not args.dry_run and reviewer_dest.is_file():  # an installed reviewer: its current digest must be known (F-6)
+        for _ in range(3):
+            pre = reviewer_digest()
+            if pre:
+                break
+            time.sleep(0.5)
+        if pre is None and reviewer_changed:
+            print("error: cannot read the pre-install factory-reviewer digest from the daemon (is it running?); "
+                  "nothing installed, installed.json keeps the previous record")
+            sys.exit(1)
+
     stale = [p for p in installed if p.name not in names]
     for path in stale:
         lines.append(f"{'pruned' if args.prune else 'stale'} {path.name}")
@@ -118,6 +189,16 @@ def main():
         if args.prune:
             for path in stale:
                 shutil.rmtree(path)
+        try:
+            digest = read_back_reviewer(pre, reviewer_changed and pre is not None)
+        except RuntimeError as exc:
+            print("\n".join(lines))
+            print(f"error: {exc}; installed.json keeps the previous record")
+            sys.exit(1)
+        new_record["reviewer"] = {"definition_digest": digest, "file_sha256": fl.file_sha256(reviewer_dest)}
+        if new_record != record:
+            fl.write_json(home / "factory" / "installed.json", new_record)
+        lines.append(f"reviewer factory-reviewer digest {fl.short(digest)} (origin global, layer user) recorded")
     print("\n".join(lines))
     if approvals:
         print("approve before attaching:")
@@ -127,4 +208,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except fl.Refused as exc:
+        fl.refuse(str(exc))

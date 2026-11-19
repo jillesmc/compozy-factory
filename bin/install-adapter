@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""Install a custom adapter for one workspace (operator only, interactive terminal; BR-4).
+
+Usage: bin/install-adapter <role> <path> --workspace <ws>
+
+<path> is the adapter directory (or its SKILL.md); it must be the path factory.toml sets for that
+role (`[roles.<role>] adapter`, or `[roles.signals] adapters.<provider>`), and its frontmatter provider
+must be configured for the role. After confirmation the tree is copied to
+$COMPOZY_HOME/factory/adapters/<role>-<provider>@<tree digest>/, its SKILL.md becomes the user skill
+factory-<role>-<provider>-<digest12>, and $COMPOZY_HOME/factory/bindings.json records
+(workspace root, role, provider) -> source, tree digest, installed path, skill. Re-run after every
+change to the adapter: the heartbeat wrapper and `factory_guard.py adapter` refuse a changed source.
+"""
+import argparse
+import shutil
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import factorylib as fl  # noqa: E402
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("role", choices=fl.ROLES)
+    parser.add_argument("path")
+    parser.add_argument("--workspace", required=True)
+    args = parser.parse_args()
+    if not sys.stdin.isatty():
+        fl.refuse("bin/install-adapter needs an interactive terminal")
+
+    root = fl.workspace_root(args.workspace)
+    _, conf = fl.load_factory_toml(root)
+    src = fl.adapter_path(Path.cwd(), args.path)
+    if not (src / "SKILL.md").is_file():
+        fl.refuse(f"{src}/SKILL.md not found")
+    meta = fl.adapter_meta((src / "SKILL.md").read_text())
+    role, provider = args.role, meta.get("provider")
+    if meta.get("role") != role:
+        fl.refuse(f"adapter role {meta.get('role')!r} is not {role}")
+    configured = conf["roles"][role]["provider"]
+    configured = configured if isinstance(configured, list) else [configured]
+    if provider not in configured:
+        fl.refuse(f'adapter provider "{provider}" is not configured for [roles.{role}] (configured: {", ".join(configured)})')
+    declared = fl.custom_configured(conf, role, provider)
+    if not declared or fl.adapter_path(root, declared) != src:
+        key = f"adapters.{provider}" if role == "signals" else "adapter"
+        fl.refuse(f"[roles.{role}] {key} is {declared!r}, not {src}")
+
+    tree = fl.tree_digest(src)
+    hexd = tree.removeprefix("sha256:")
+    home = fl.compozy_home()
+    dest = home / "factory" / "adapters" / f"{role}-{provider}@{hexd}"
+    skill = f"factory-{role}-{provider}-{hexd[:12]}"
+    skill_dir = home / "skills" / skill
+    files = sorted(fl.tree_files(src).items())
+    print(f"adapter    {role}/{provider} tree {fl.short(tree)} ({', '.join(rel for rel, _ in files)}); "
+          f"provider matches [roles.{role}]")
+    ok, reason = fl.conformance(role, provider, fl.record_path(role, provider, src, True), src)
+    print(f"conformance {reason}" + ("" if ok else " → unsupported; attach needs --allow-unsupported-adapter"))
+    answer = input(f"install to {dest}, skill {skill}, and bind ({root}, {role}, {provider})? [y/N] ")
+    if answer.strip().lower() not in ("y", "yes"):
+        fl.refuse("not confirmed; nothing installed")
+
+    for path in (dest, skill_dir):
+        if path.is_symlink():
+            fl.refuse(f"{path} is a symlink (symlink_not_supported)")
+    if dest.exists():
+        shutil.rmtree(dest)
+    for rel, path in files:
+        (dest / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, dest / rel)
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(fl.named_skill((dest / "SKILL.md").read_text(), skill))
+
+    entry = {"root": str(root.resolve()), "role": role, "provider": provider, "source": str(src),
+             "tree": tree, "installed": str(dest), "skill": skill}
+    rest = [b for b in fl.bindings(home) if (b["root"], b["role"], b["provider"]) != (entry["root"], role, provider)]
+    fl.write_json(home / "factory" / "bindings.json", {"bindings": rest + [entry]})
+    print(f"installed  binding ({root.name}, {role}, {provider}) → @{fl.short(tree)}, skill {skill}")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except fl.Refused as exc:
+        fl.refuse(str(exc))
+    except (RuntimeError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)

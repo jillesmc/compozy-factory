@@ -4,7 +4,7 @@ import importlib.util
 from datetime import datetime, timezone
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parents[1] / "agents" / "factory-auditor" / "sources" / "due"
+SRC = Path(__file__).resolve().parents[1] / "skills" / "factory-code-github" / "sources" / "due.py"
 loader = importlib.machinery.SourceFileLoader("due", str(SRC))
 spec = importlib.util.spec_from_loader("due", loader)
 due = importlib.util.module_from_spec(spec)
