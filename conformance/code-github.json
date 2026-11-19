@@ -1,0 +1,36 @@
+{
+  "adapter_digest": "sha256:4bce471ef5738d4c670224e1945b167df3012d76f0f5d92b43814155359ecf91",
+  "environment": {
+    "extensions": {
+      "github-app-review": "0.3.0"
+    },
+    "factory_commit": "37ebac2691635a45a256ea4c74d5292ab31cdac5",
+    "provider_site": "github.com/acme/acme-reports"
+  },
+  "operations": {
+    "code.check_hygiene": "pass",
+    "code.issue_close": "pass",
+    "code.issue_comment": "pass",
+    "code.issue_create": "pass",
+    "code.issue_edit": "pass",
+    "code.issue_get": "pass",
+    "code.issue_label_events": "pass",
+    "code.issue_labels": "pass",
+    "code.issue_link_child": "pass",
+    "code.issue_list": "pass",
+    "code.issue_reopen": "pass",
+    "code.issue_search": "pass",
+    "code.label_ensure": "pass",
+    "code.pr_get": "pass",
+    "code.pr_merge": "pass",
+    "code.pr_search": "pass",
+    "code.pr_threads": "pass",
+    "code.pr_update_branch": "pass",
+    "code.promotion_upsert": "pass"
+  },
+  "outcome": "pass",
+  "provider": "github",
+  "role": "code",
+  "timestamp": "2026-11-19T15:33:27Z",
+  "trace": "conformance/code-github.trace.jsonl"
+}

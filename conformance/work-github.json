@@ -1,0 +1,22 @@
+{
+  "adapter_digest": "sha256:447101dac3362d130e7368897b70011113d4940582c56d60b3ac43cb778598b5",
+  "environment": {
+    "extensions": {},
+    "factory_commit": "03171de2749f029ca0f299e5807ffb698dc02e2c",
+    "provider_site": "github.com/jillesmc/factory-conformance-sandbox"
+  },
+  "operations": {
+    "work.comment": "pass",
+    "work.create": "pass",
+    "work.fields_repair": "pass",
+    "work.key_format": "pass",
+    "work.state": "pass",
+    "work.train_close": "pass",
+    "work.transition": "pass"
+  },
+  "outcome": "pass",
+  "provider": "github",
+  "role": "work",
+  "timestamp": "2026-11-19T15:12:22Z",
+  "trace": "conformance/work-github.trace.jsonl"
+}

@@ -1,0 +1,16 @@
+{
+  "adapter_digest": "sha256:92cac423250221557e247dd33b9a5c94ac7b31de87d7b60f950b3b5c23d4c940",
+  "environment": {
+    "extensions": {},
+    "factory_commit": "750a26699ccd9da532db2e925174e9830f8ed509",
+    "provider_site": "github.com/acme/acme-reports environment production"
+  },
+  "operations": {
+    "deploy.wait": "pass"
+  },
+  "outcome": "pass",
+  "provider": "github-deployments",
+  "role": "deploy",
+  "timestamp": "2026-11-19T14:25:55Z",
+  "trace": "conformance/deploy-github-deployments.trace.jsonl"
+}

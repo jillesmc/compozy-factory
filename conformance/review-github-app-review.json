@@ -1,0 +1,20 @@
+{
+  "adapter_digest": "sha256:9bc425c984fd1d18fb3aff577dabe7adc8e3ca6d5eff833bfd29ee33ee5dbb05",
+  "environment": {
+    "extensions": {
+      "github-app-review": "0.3.0"
+    },
+    "factory_commit": "37ebac2691635a45a256ea4c74d5292ab31cdac5",
+    "provider_site": "github.com/acme/acme-reports"
+  },
+  "operations": {
+    "review.context": "pass",
+    "review.gate": "pass",
+    "review.submit": "pass"
+  },
+  "outcome": "pass",
+  "provider": "github-app-review",
+  "role": "review",
+  "timestamp": "2026-11-19T15:33:27Z",
+  "trace": "conformance/review-github-app-review.trace.jsonl"
+}

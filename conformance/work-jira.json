@@ -1,0 +1,22 @@
+{
+  "adapter_digest": "sha256:7807317779d52c4a569c389380bfda7e512f1987eb707151c4213d821550baad",
+  "environment": {
+    "extensions": {},
+    "factory_commit": "12b5d6d880ccf2326fa0fb3b70749a737e8abdbf",
+    "provider_site": "acme.atlassian.net"
+  },
+  "operations": {
+    "work.comment": "pass",
+    "work.create": "pass",
+    "work.fields_repair": "pass",
+    "work.key_format": "pass",
+    "work.state": "pass",
+    "work.train_close": "pass",
+    "work.transition": "pass"
+  },
+  "outcome": "pass",
+  "provider": "jira",
+  "role": "work",
+  "timestamp": "2026-11-19T15:17:59Z",
+  "trace": "conformance/work-jira.trace.jsonl"
+}
