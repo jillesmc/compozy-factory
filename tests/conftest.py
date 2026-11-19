@@ -36,6 +36,12 @@ def out(value):
     json.dump(state, open(state_path, "w"))
     sys.exit(0)
 cmd = args[:3]
+fail = state.get("fail", {})  # "<first two args>": count of calls that fail (bin/setup rollback tests)
+if fail.get(" ".join(args[:2]), 0) > 0:
+    fail[" ".join(args[:2])] -= 1
+    json.dump(state, open(state_path, "w"))
+    print(json.dumps({"error": "fake: injected failure " + " ".join(args[:2])}), file=sys.stderr)
+    sys.exit(1)
 if args[:2] == ["workspace", "info"]:
     out({"workspace": {"root_dir": state["root"]}})
 if cmd == ["agent", "instance", "list"]:
@@ -93,6 +99,44 @@ if args[:2] == ["skill", "info"]:
                                       "path": os.path.join(os.environ["COMPOZY_HOME"], "skills", name)})
 if args[:2] == ["extension", "list"]:
     out(state.get("extensions", []))
+if args[:2] == ["extension", "exec"] and not state["policy"].get("enabled", True):
+    print('{"error":"extension_disabled"}', file=sys.stderr)
+    sys.exit(1)
+if args[:2] == ["extension", "exec"] and opt("--cmd") == "policy":  # github-app-review's read-only status
+    import hashlib
+    working = os.environ["GITHUB_APP_POLICY_FILE"]
+    digest, active = state["policy"]["running"], {"digest": None, "path": None, "state": "unset", "error": None}
+    if digest:
+        path = os.path.join(os.path.dirname(working), "policies", digest + ".toml")
+        ok = os.path.isfile(path) and hashlib.sha256(open(path, "rb").read()).hexdigest() == digest
+        active = {"digest": digest, "path": path if ok else None, "state": "approved" if ok else "unapproved",
+                  "error": None if ok else "policy_unapproved"}
+    wd = hashlib.sha256(open(working, "rb").read()).hexdigest() if os.path.isfile(working) else None
+    out({"result": {"structured": {"working": {"path": working, "digest": wd, "error": None}, "active": active}}})
+if args[:3] == ["extension", "secrets", "set"]:  # the running process sees a new secret only after a restart
+    state["policy"]["secret"] = sys.stdin.read()
+    for name, count in state.get("fail_after_set", {}).items():  # failures that start once the secret changed
+        fail[name] = fail.get(name, 0) + count
+    state["fail"], state["fail_after_set"] = fail, {}
+    out({})
+if args[:3] == ["extension", "secrets", "unset"]:
+    state["policy"]["secret"] = None
+    out({})
+if args[:2] == ["extension", "disable"]:
+    state["policy"]["enabled"] = False
+    out({})
+if args[:2] == ["extension", "enable"]:
+    state["policy"]["enabled"] = True
+    if not state["policy"].get("stuck"):  # stuck: the restarted process keeps reporting the old digest
+        state["policy"]["running"] = state["policy"]["secret"]
+    out({})
+if args[:3] == ["tool", "invoke", "ext__github_app_review__pr_context"]:  # served only by the running version
+    repo, digest = json.loads(opt("--input"))["repo"], state["policy"]["running"]
+    path = os.path.join(os.path.dirname(os.environ["GITHUB_APP_POLICY_FILE"]), "policies", f"{digest}.toml")
+    if digest and os.path.isfile(path) and f'[repos."{repo}"]' in open(path).read():
+        out({"status": "completed", "result": {"structured": {"state": "merged"}}})
+    print(json.dumps({"error": "repo_not_allowed" if digest else "policy_unapproved"}), file=sys.stderr)
+    sys.exit(1)
 if cmd == ["agent", "memory", "inspect"]:
     out({"content": state["memory"].get(args[3], ""), "digest": "digest-" + args[3]})
 if cmd == ["agent", "memory", "write"]:
@@ -130,7 +174,8 @@ class FakeCompozy:
         self.state_path, self.log_path = tmp_path / "state.json", tmp_path / "calls.jsonl"
         self.log_path.write_text("")
         self.state = {"root": "", "instances": [], "scripts": {}, "memory": {}, "skills": {},
-                      "agent_info": None}
+                      "agent_info": None,
+                      "policy": {"secret": None, "running": None}}
         self.save()
 
     def save(self):

@@ -38,15 +38,8 @@ def main():
     agents = [a.strip() for a in args.agents.split(",") if a.strip()] if args.agents else fl.team(conf)
     ws = args.workspace
     try:
-        for (role, provider), (src, _, custom) in fl.adapters(root, conf).items():
-            name, installed = fl.resolve(root, role, provider, conf)
-            fl.check_skill(name, installed)
-            ok, reason = fl.conformance(role, provider, fl.record_path(role, provider, src, custom), installed)
-            if ok:
-                continue
-            if not args.allow_unsupported_adapter:
-                fl.refuse(f"adapter {role}/{provider} is not supported ({reason}); pass --allow-unsupported-adapter")
-            print(f"warning: adapter {role}/{provider} is not supported ({reason}); attaching anyway")
+        for warning in fl.verify_adapters(root, conf, args.allow_unsupported_adapter):
+            print(f"warning: {warning}; attaching anyway")
         print(f"reviewer {fl.reviewer(ws)}")
     except fl.Refused as exc:
         fl.refuse(str(exc))

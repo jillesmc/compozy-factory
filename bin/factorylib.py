@@ -4,7 +4,9 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -174,7 +176,7 @@ def adapters(root, conf):
     return found
 
 
-def _check_value(root, where, key, spec, value):
+def _check_value(root, where, key, spec, value, overlay):
     kind = TYPES[spec["type"]]
     if not isinstance(value, kind) or (kind is int and isinstance(value, bool)):
         refuse(f"factory.toml {where} {key} must be a {spec['type']}")
@@ -185,10 +187,10 @@ def _check_value(root, where, key, spec, value):
         refuse(f'factory.toml {where} {key} "{value}" must match {spec["pattern"]}')
     if "file_keys" in spec:  # a per-project file the provider's extension owns (ADR-004)
         path = Path(root) / value
-        if not path.is_file():
+        if value not in overlay and not path.is_file():
             refuse(f"factory.toml {where} {key}: {value} not found")
         try:
-            data = tomllib.loads(path.read_text())
+            data = tomllib.loads(overlay[value] if value in overlay else path.read_text())
         except tomllib.TOMLDecodeError as exc:
             refuse(f"factory.toml {where} {key}: {value} invalid TOML ({exc})")
         for name, typ in spec["file_keys"].items():
@@ -197,7 +199,7 @@ def _check_value(root, where, key, spec, value):
                 refuse(f"factory.toml {where} {key}: {value} needs {name} ({typ})")
 
 
-def _check_roles(root, conf):
+def _check_roles(root, conf, overlay):
     roles = conf.get("roles")
     if not isinstance(roles, dict):
         refuse("factory.toml missing [roles.signals] provider")
@@ -242,7 +244,7 @@ def _check_roles(root, conf):
                 if spec.get("required"):
                     refuse(f"factory.toml missing {where} {key}")
                 continue
-            _check_value(root, where, key, spec, sub[key])
+            _check_value(root, where, key, spec, sub[key], overlay)
     for (role, provider), (_, meta, _) in found.items():  # BR-17 cross-role compatibility
         needs = meta.get("requires_roles") or {}
         if not (isinstance(needs, dict) and all(k in ROLES and isinstance(v, str) for k, v in needs.items())):
@@ -254,13 +256,16 @@ def _check_roles(root, conf):
     return found
 
 
-def load_factory_toml(root):
-    """Return (path, config) or refuse naming the file or the first missing or invalid key (BR-1..BR-4, BR-7, BR-17)."""
-    path = root / ".compozy" / "factory" / "factory.toml"
-    if not path.is_file():
+def load_factory_toml(root, overlay=None):
+    """Return (path, config) or refuse naming the file or the first missing or invalid key (BR-1..BR-4, BR-7, BR-17).
+    overlay: {repository-relative path: text} read instead of files not written yet (bin/setup's preflight)."""
+    overlay = overlay or {}
+    rel = ".compozy/factory/factory.toml"
+    path = root / rel
+    if rel not in overlay and not path.is_file():
         refuse(f"{path} missing")
     try:
-        conf = tomllib.loads(path.read_text())
+        conf = tomllib.loads(overlay[rel] if rel in overlay else path.read_text())
     except tomllib.TOMLDecodeError as exc:
         refuse(f"{path} invalid TOML ({exc})")
     if any(section in conf for section in OLD_SECTIONS):
@@ -276,7 +281,7 @@ def load_factory_toml(root):
     posts = conf["language"]["posts"]
     if posts not in POSTS:
         refuse(f'{path} [language] posts "{posts}" not supported by factory_intake.py ({", ".join(POSTS)})')
-    _check_roles(root, conf)
+    _check_roles(root, conf, overlay)
     return path, conf
 
 
@@ -307,6 +312,23 @@ def conformance(role, provider, record, installed_dir):
     if data.get("outcome") != "pass":
         return False, "conformance outcome is not pass"
     return True, "supported"
+
+
+def verify_adapters(root, conf, allow_unsupported):
+    """bin/attach and bin/setup: every configured (role, provider) resolves to its installed, verified tree (custom
+    ones through a valid binding) and has a passing conformance record (BR-11). Returns the warnings for unsupported
+    adapters when allowed; raises Refused otherwise."""
+    warnings = []
+    for (role, provider), (src, _, custom) in adapters(root, conf).items():
+        name, installed = resolve(root, role, provider, conf)
+        check_skill(name, installed)
+        ok, reason = conformance(role, provider, record_path(role, provider, src, custom), installed)
+        if ok:
+            continue
+        if not allow_unsupported:
+            raise Refused(f"adapter {role}/{provider} is not supported ({reason}); pass --allow-unsupported-adapter")
+        warnings.append(f"adapter {role}/{provider} is not supported ({reason})")
+    return warnings
 
 
 def key_names(key_format, key, title, slug):
@@ -343,6 +365,71 @@ def boundary(agent, ws, instance):
 
 def team(conf):
     return conf.get("team", {}).get("agents") or AGENTS
+
+
+# ---------------------------------------------------------------- project files as a reviewed PR
+
+def run(*args, cwd=None, check=True):
+    env = {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")}  # keyring login for gh
+    proc = subprocess.run(list(args), cwd=cwd, capture_output=True, text=True, env=env)
+    if check and proc.returncode != 0:
+        raise RuntimeError(f"{' '.join(args[:3])}: {(proc.stderr or proc.stdout).strip()[:400]}")
+    return proc
+
+
+def _remote_branch_files(root, branch, rels):
+    """{rel: text} of the branch on origin ("" for a missing file), or None when the branch does not exist."""
+    if not run("git", "-C", str(root), "ls-remote", "--heads", "origin", branch).stdout.strip():
+        return None
+    run("git", "-C", str(root), "fetch", "--quiet", "origin", branch)
+    return {rel: run("git", "-C", str(root), "show", f"FETCH_HEAD:{rel}", check=False).stdout for rel in rels}
+
+
+def _push_branch(root, base, branch, files, title, before):
+    """Commit `files` on `branch` from origin/<base> in a temporary worktree (the checkout is untouched) and push."""
+    tmp = Path(tempfile.mkdtemp(prefix="factory-pr-"))
+    wt = tmp / "wt"
+    run("git", "-C", str(root), "worktree", "add", "--quiet", "--detach", str(wt), f"origin/{base}")
+    try:
+        if before:
+            before(wt)
+        for rel, text in files.items():
+            (wt / rel).parent.mkdir(parents=True, exist_ok=True)
+            (wt / rel).write_text(text)
+        load_factory_toml(wt)  # the PR carries a file the factory accepts, or nothing is pushed
+        run("git", "add", *files, cwd=wt)
+        run("git", "commit", "--quiet", "-m", title, cwd=wt)
+        print(f"branch     {branch} from origin/{base}, ", end="")
+        run("git", "push", "--quiet", "origin", f"HEAD:refs/heads/{branch}", cwd=wt)
+        print("pushed")
+    finally:
+        run("git", "-C", str(root), "worktree", "remove", "--force", str(wt), check=False)
+        if tmp.exists() and not any(tmp.iterdir()):
+            tmp.rmdir()
+
+
+def publish(root, base, repo, branch, files, title, body, note, before=None):
+    """Push `files` ({rel: text}) on `branch` from origin/<base> (or accept an identical branch an interrupted run
+    left, H-5) and open or reuse its PR into <base>. `before(worktree)` may refuse before anything is written."""
+    run("git", "-C", str(root), "fetch", "--quiet", "origin", base)
+    existing = _remote_branch_files(root, branch, files)
+    if existing is None:
+        _push_branch(root, base, branch, files, title, before)
+    elif existing == files:
+        print(f"branch     {branch} already on origin with these files (an earlier run pushed it)")
+    else:
+        refuse(f"branch {branch} already exists on origin with other files (its PR is pending: "
+               "merge it, or delete the branch to start over)")
+    listed = json.loads(run("gh", "pr", "list", "--repo", repo, "--head", branch, "--state", "open",
+                            "--json", "number").stdout or "[]")
+    if listed:
+        print(f"pr         #{listed[0]['number']} already open into {base}")
+        return listed[0]["number"]
+    url = run("gh", "pr", "create", "--repo", repo, "--base", base, "--head", branch,
+              "--title", title, "--body", body).stdout.strip()
+    number = url.rstrip("/").rsplit("/", 1)[-1]
+    print(f"pr         #{number} opened into {base} ({note})")
+    return number
 
 
 # ---------------------------------------------------------------- github-app-review policy (F1, BR-15)
@@ -517,6 +604,46 @@ def parse_policy(data, path):
 def activate_line(digest):
     return (f"printf {digest} | compozy extension secrets set github-app-review "
             f"--env {POLICY_DIGEST_ENV} --value-stdin")
+
+
+def policy_block(repo, base, release, approvers):
+    return (f'[repos."{repo}"]\ndelivery_base = "{base}"\npromotion = {{ head = "{base}", base = "{release}" }}\n'
+            f"approvers = [{', '.join(json.dumps(a) for a in approvers)}]\n")
+
+
+def plan_policy(repo, block):
+    """(working path, new working-copy bytes or None when it already holds this block); refuses a conflict."""
+    working, _ = policy_paths()
+    current = working.read_bytes() if working.is_file() else b""
+    want = parse_policy(block.encode(), "block")[repo.lower()]
+    have = parse_policy(current, working).get(repo.lower()) if current else None
+    if have == want:
+        return working, None
+    if have:
+        refuse(f'policy working copy {working} already has [repos."{have["repo"]}"] with other values; '
+               "edit it by hand, then run bin/stage-policy")
+    sep = b"" if not current or current.endswith(b"\n\n") else b"\n" if current.endswith(b"\n") else b"\n\n"
+    data = current + sep + block.encode()
+    parse_policy(data, working)
+    return working, data
+
+
+def ask_approvers(repo):
+    try:
+        answer = input(f"approvers  promotion approvers for {repo} (comma-separated GitHub logins): ")
+    except EOFError:
+        refuse("approvers: no answer (end of input)")
+    logins = [a.strip().lstrip("@") for a in answer.split(",") if a.strip()]
+    if not logins or any(not re.fullmatch(r"[A-Za-z0-9-]+", a) for a in logins):
+        refuse("approvers must be one or more GitHub logins separated by commas")
+    return logins
+
+
+def write_working_copy(working, data):
+    working.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = working.with_name(working.name + ".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, working)
 
 
 def stage_policy(env=None):

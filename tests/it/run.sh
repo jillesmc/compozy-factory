@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # IT-001..IT-004 (factory-user-agents), IT-007..IT-009 and IT-001 (factory-roles: bin/migrate-config, then
-# bin/attach --dry-run) against a real, isolated CompozyOS daemon; then IT-006 (tests/it/activation.sh, the
+# bin/attach --dry-run; IT-004: bin/setup) against a real, isolated CompozyOS daemon; then IT-006 (tests/it/activation.sh, the
 # activation runbook R0-R4 and rollback from the released extension builds) on a second isolated daemon.
 #
 # Starts a throwaway daemon with its own COMPOZY_HOME, HTTP port and socket, runs the real
@@ -39,6 +39,9 @@ socket = "$T/daemon.sock"
 
 [agents.heartbeat]
 enabled = false
+
+[agents.always_on]
+max_active_instances = 50   # scratch, setupws and the migrated workspace each attach six
 
 [providers.claude-mm4]
 display_name = "Claude (mm4, IT stub)"
@@ -371,6 +374,86 @@ iso "$REPO/bin/attach" migrated --dry-run --allow-unsupported-adapter | tee "$T/
 [ "$(grep -c '^would attach factory-' "$T/dry.out")" = 6 ] || { echo "attach --dry-run did not accept the migrated file"; exit 1; }
 cz agent instance list --workspace migrated -o json | json 'assert not d["instances"], d; print("dry-run created no instance")'
 
+step "factory-roles IT-004 bin/setup on a temp project: preflight, policy switch on the real extension, files, labels, attach"
+# Repo A (acme/other-api) is served by an approved version V1 staged here; setup onboards B (acme/acme-api) and
+# switches GITHUB_APP_POLICY_DIGEST to V2 through the real `secrets set`, extension restart and `--cmd policy`.
+# The policy working copy is the extension's GITHUB_APP_POLICY_FILE secret under $T (dummy_secrets above); gh is
+# a fake (labels, and no PR in repo A, so the pr_context smoke is skipped: no network). The adapters were
+# installed from this checkout, so their conformance records verify (no --allow-unsupported-adapter).
+if [ -f "$EXT/extension.toml" ] && [ -f "$NR/extension.toml" ]; then
+  SG=$T/setup; POL=$T/policy.toml
+  mkdir -p "$SG/bin" "$SG/project"; : > "$SG/labels"
+  printf '[user]\n\tname = IT\n\temail = it@example.invalid\n[init]\n\tdefaultBranch = develop\n' > "$SG/gitconfig"
+  gits() { env GIT_CONFIG_GLOBAL="$SG/gitconfig" GIT_CONFIG_NOSYSTEM=1 git "$@"; }
+  gits init -q --bare "$SG/origin.git"; gits init -q "$SG/project"; printf '# acme-api\n' > "$SG/project/README.md"
+  (cd "$SG/project" && gits add . && gits commit -q -m init && gits remote add origin "$SG/origin.git" &&
+    gits push -q origin HEAD:develop)
+  cat > "$SG/bin/gh" <<EOF
+#!/bin/sh
+echo "\$*" >> "$SG/gh.log"
+case "\$1 \$2" in
+  "label create") echo "\$3" >> "$SG/labels" ;;
+  "label list") python3 -c 'import json, sys; print(json.dumps([{"name": l.strip()} for l in open(sys.argv[1])]))' "$SG/labels" ;;
+  "pr list") echo "[]" ;;
+  "pr create") echo https://github.com/acme/acme-api/pull/1 ;;
+esac
+EOF
+  chmod +x "$SG/bin/gh"
+  printf '[repos."acme/other-api"]\ndelivery_base = "develop"\npromotion = { head = "develop", base = "main" }\napprovers = ["octocat"]\n' > "$POL"
+  iso env GITHUB_APP_POLICY_FILE="$POL" "$REPO/bin/stage-policy"
+  V1=$(sha256sum "$POL" | cut -d' ' -f1)
+  printf '%s' "$V1" | cz extension secrets set github-app-review --env GITHUB_APP_POLICY_DIGEST --value-stdin >/dev/null
+  cz extension disable github-app-review >/dev/null; cz extension enable github-app-review >/dev/null
+  cz workspace add "$SG/project" --name setupws -o json | json 'print("workspace", d["name"], d["id"])'
+  gpolicy() { cz extension exec github-app-review --cmd policy --workspace setupws -o json | json 's = d["result"]["structured"]["active"]; print(s["state"], s["digest"])'; }
+  [ "$(gpolicy)" = "approved $V1" ] || { echo "V1 not active: $(gpolicy)"; exit 1; }
+  echo "repo A served by V1 ${V1:0:12}"
+  setup_run() {  # $1 = answers on a pseudo-terminal, or "-" for a non-TTY stdin read from $2
+    if [ "$1" = - ]; then
+      iso env GITHUB_APP_POLICY_FILE="$POL" GIT_CONFIG_GLOBAL="$SG/gitconfig" GIT_CONFIG_NOSYSTEM=1 PATH="$SG/bin:$PATH" "$REPO/bin/setup" setupws --from "$REPO/factory.example.toml" < "$2"
+    else
+      iso env GITHUB_APP_POLICY_FILE="$POL" GIT_CONFIG_GLOBAL="$SG/gitconfig" GIT_CONFIG_NOSYSTEM=1 PATH="$SG/bin:$PATH" python3 - "$1" "$REPO/bin/setup" setupws --from "$REPO/factory.example.toml" <<'EOF'
+import os, pty, subprocess, sys
+master, slave = pty.openpty()
+proc = subprocess.Popen(sys.argv[2:], stdin=slave)
+os.close(slave); os.write(master, sys.argv[1].encode()); sys.exit(proc.wait())
+EOF
+    fi
+  }
+  printf 'acme-api-prod\n1234567\n' > "$SG/answers"
+  before=$(cd "$T" && find policy.toml policies "$SG/project" -type f -exec sha256sum {} + | sort)
+  if setup_run - "$SG/answers" > "$SG/refused.out"; then echo "non-TTY setup with a policy change did not refuse"; exit 1; fi
+  tail -1 "$SG/refused.out"
+  [ "$(tail -1 "$SG/refused.out")" = "refused: policy confirmation needs an interactive terminal" ]
+  [ "$(cd "$T" && find policy.toml policies "$SG/project" -type f -exec sha256sum {} + | sort)" = "$before" ] || { echo "refusal wrote files"; exit 1; }
+  [ ! -f "$SG/gh.log" ] || { echo "refusal called gh"; exit 1; }
+  [ "$(gpolicy)" = "approved $V1" ] || { echo "refusal changed the policy: $(gpolicy)"; exit 1; }
+  cz agent instance list --workspace setupws -o json | json 'assert not d["instances"], d'
+  echo "no TTY: refused after the preflight; no file, no gh call, policy still V1, no instance"
+  setup_run $'acme-api-prod\n1234567\noctocat\ny\n' | tee "$SG/setup.out"
+  V2=$(sha256sum "$POL" | cut -d' ' -f1)
+  [ "$(gpolicy)" = "approved $V2" ] && [ "$V2" != "$V1" ] && [ -f "$T/policies/$V1.toml" ] || { echo "policy not switched to V2: $(gpolicy)"; exit 1; }
+  echo "daemon: --cmd policy reports V2 ${V2:0:12} active; V1 kept on disk"
+  grep -q "^policy     GITHUB_APP_POLICY_DIGEST set; active digest verified ${V2:0:12}" "$SG/setup.out"
+  [ "$(grep -c '^attach     boundary factory-.* ok$' "$SG/setup.out")" = 6 ]
+  [ "$(grep -c '^label create ' "$SG/gh.log")" = 4 ]
+  for f in .compozy/factory/factory.toml .compozy/newrelic.toml REVIEW.md; do
+    [ "$(gits --git-dir "$SG/origin.git" show "factory/setup:$f")" = "$(cat "$SG/project/$f")" ]
+  done
+  grep -q '^pr         #1 opened into develop' "$SG/setup.out"
+  echo "PR branch factory/setup carries the three files written to the checkout"
+  cz agent instance list --workspace setupws -o json | json '
+act = sorted(i["agent_name"] for i in d["instances"] if i["state"] == "active")
+assert len(act) == 6, act; print("setupws active instances:", " ".join(act))'
+  : > "$SG/gh.log"
+  setup_run - /dev/null | tee "$SG/rerun.out"
+  [ "$(tail -1 "$SG/rerun.out")" = "setup      nothing to apply: every step ok/exists" ]
+  if grep -q '^label create' "$SG/gh.log" || [ "$(gpolicy)" != "approved $V2" ]; then echo "re-run changed something"; exit 1; fi
+  echo "re-run: every step ok/exists, nothing created"
+else
+  echo "github-app-review or newrelic not found at $EXT / $NR: bin/setup IT-004 not run"; exit 1
+fi
+
 step "factory-roles UT-029 on the real daemon: bin/reload runs the reviewer guard and gives the new main session its boundary turn"
 iso "$REPO/bin/reload" scratch factory-scribe | tee "$T/reload.out"
 grep -q '^reviewer factory-reviewer origin global layer user' "$T/reload.out"
@@ -379,4 +462,4 @@ grep -q '^boundary factory-scribe ok$' "$T/reload.out"
 step "factory-roles IT-006 activation runbook (tests/it/activation.sh: its own isolated daemon)"
 KEEP="${KEEP:-}" "$REPO/tests/it/activation.sh"
 
-step "IT-001..IT-004, IT-007..IT-009 (factory-user-agents/factory-roles), factory-roles IT-001 and IT-006 passed"
+step "IT-001..IT-004, IT-007..IT-009 (factory-user-agents/factory-roles), factory-roles IT-001, IT-004 and IT-006 passed"

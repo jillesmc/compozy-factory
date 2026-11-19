@@ -1,0 +1,518 @@
+#!/usr/bin/env python3
+"""Onboard a project with one command: preflight every change, then apply it after confirmation (US-011, BR-19).
+
+Usage: bin/setup <workspace> [--from <factory.toml>] [--allow-unsupported-adapter]
+
+Preflight (read-only: no file write, no GitHub call before the label check, no CompozyOS mutation) prints every
+change: the extensions, the project files it writes (`.compozy/factory/factory.toml` from --from when missing,
+`.compozy/newrelic.toml` from answers on stdin, `REVIEW.md` from a template; protected paths are marked `(protected
+path)`, BR-18), the labels, the github-app-review policy block and the active policy digest change, the PR
+preconditions (checkout on the delivery base, empty index, origin, files absent on origin/<base>, factory/setup
+absent or identical; read-only, no fetch), and the agents bin/attach creates (adapters verified against their
+conformance records, BR-11, and the reviewer guard, BR-16). Any refusal stops it there. A policy change needs an
+interactive terminal (BR-12): with stdin not a TTY it refuses after the preflight with `refused: policy
+confirmation needs an interactive terminal`.
+Apply (after `y`): add the block to the policy working copy (refused when it changed since the preflight), stage
+it (bin/stage-policy), set GITHUB_APP_POLICY_DIGEST and verify the new version active (restarting the extension
+when the running process still reports the old one), smoke an already-served repository with pr_context. Any
+failure there (a refusal or an error) rolls back, best effort and in order: digest set back, extension enabled,
+verified, else the manual commands; then it stops before writing project files. Then the project files go out as a
+reviewed PR (branch factory/setup from origin/<base>, like bin/migrate-config) and are written to the checkout,
+staged (a `git pull` after the merge fast-forwards over them); then the labels (`gh label create`), bin/attach
+(boundary turns), and the manual checklist. Existing files are never rewritten: a re-run on a configured project
+reports every step ok/exists and changes nothing. No secret is read or printed.
+"""
+import argparse
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import factorylib as fl  # noqa: E402
+
+BIN = Path(__file__).resolve().parent
+REL_TOML, REL_NR, REL_REVIEW = ".compozy/factory/factory.toml", ".compozy/newrelic.toml", "REVIEW.md"
+EXTENSIONS = {"newrelic": ("signals", (0, 4, 0)), "github-app-review": ("review", (0, 3, 0))}  # name: (role, minimum)
+GHAR = "github-app-review"
+BRANCH = "factory/setup"
+PR_TITLE = "chore: onboard the factory (factory.toml, newrelic.toml, REVIEW.md)"
+PR_BODY = ("Adds the factory configuration written by `bin/setup`: `.compozy/factory/factory.toml`, "
+           "`.compozy/newrelic.toml` and `REVIEW.md` (only the files the project lacked).\n\n"
+           "All are protected paths: the factory never merges this PR. Review it and merge it outside the factory.")
+LABELS = {"factory": ("ededed", "Managed by the factory"),
+          "factory:deliver": ("0e8a16", "The factory delivers this issue"),
+          "factory:in-progress": ("fbca04", "The factory is delivering this issue"),
+          "factory:blocked": ("d93f0b", "The factory needs the operator")}
+REVIEW_TEMPLATE = """# Review conventions
+
+The factory-reviewer applies this file from the base branch to every pull request (a protected path: a change
+to it waits for the operator).
+
+## Severity
+
+- `blocker`: wrong behavior, data loss, a security issue, a broken build or test.
+- `major`: a missing test for changed behavior, an unhandled error path, a contract change without its callers.
+- `minor`: naming, duplication, readability.
+
+## Project rules
+
+- (edit me) the conventions this project's pull requests must follow.
+"""
+
+
+def line(tag, text):
+    print(f"{tag:<10} {text}")
+
+
+def write_mark(rel):
+    return f"write {rel:<36}" + (" (protected path)" if fl.is_protected(rel) else "")
+
+
+def cz(*args, stdin=None):
+    """A CompozyOS CLI mutation (no JSON output expected); raises RuntimeError on failure."""
+    proc = subprocess.run(["compozy", *args], capture_output=True, text=True, input=stdin)
+    if proc.returncode != 0:
+        raise RuntimeError(f"compozy {' '.join(args[:4])}: {(proc.stderr or proc.stdout).strip()[:300]}")
+
+
+def gh(*args):
+    env = {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")}  # keyring login
+    proc = subprocess.run(["gh", *args], capture_output=True, text=True, env=env, timeout=60)
+    if proc.returncode != 0:
+        raise RuntimeError(f"gh {' '.join(args[:3])}: {proc.stderr.strip()[:300]}")
+    return proc.stdout
+
+
+def ask(prompt):
+    try:
+        answer = input(prompt).strip()
+    except EOFError:
+        answer = None
+    if not sys.stdin.isatty():
+        print()  # keep one line per action when answers come from a pipe
+    return answer
+
+
+def version(text):
+    return tuple(int(n) for n in re.findall(r"\d+", text or "")[:3])
+
+
+def providers(conf, role):
+    p = conf["roles"][role]["provider"]
+    return p if isinstance(p, list) else [p]
+
+
+# ------------------------------------------------------------------------------------------------ preflight
+
+def preflight_extensions(conf):
+    listed = fl.compozy("extension", "list") or []
+    found = {e.get("name"): e for e in listed if isinstance(e, dict)}
+    for name, (role, minimum) in EXTENSIONS.items():
+        if name not in providers(conf, role):
+            continue
+        ext = found.get(name)
+        if not ext:
+            fl.refuse(f"extension {name} not installed (needs {'.'.join(map(str, minimum))} or later)")
+        if ext.get("state") != "active" or version(ext.get("version")) < minimum:
+            fl.refuse(f"extension {name} {ext.get('version')} is {ext.get('state')}; needs an active "
+                      f"{'.'.join(map(str, minimum))} or later")
+        line("preflight", f"extension {name} {ext.get('version')} ok")
+
+
+def newrelic_text():
+    app = ask("newrelic   New Relic app name for this project: ")
+    if not app or len(app) > 256 or re.search("[\"'\\\\\x00-\x1f\x7f]", app):
+        fl.refuse("New Relic app must be a name of at most 256 characters without quotes or backslash")
+    account = ask("newrelic   New Relic account ID: ")
+    if not account or not account.isdigit() or int(account) <= 0:
+        fl.refuse("New Relic account ID must be a positive integer")
+    return f"app = {json.dumps(app)}\naccount_id = {int(account)}\n"
+
+
+def preflight_files(root, source):
+    """{rel: text} of the project files to write; refuses a --from that would overwrite factory.toml."""
+    writes = {}
+    toml = root / REL_TOML
+    if source:
+        text = Path(source).expanduser().read_text()
+        if toml.is_file() and toml.read_text() != text:
+            fl.refuse(f"{REL_TOML} exists and differs from {source}; setup never rewrites it (change it in a PR)")
+        if not toml.is_file():
+            writes[REL_TOML] = text
+    elif not toml.is_file():
+        fl.refuse(f"{toml} missing; pass --from <factory.toml> (e.g. factory.example.toml, edited)")
+    try:
+        signals = tomllib.loads(writes.get(REL_TOML) or toml.read_text())["roles"]["signals"]["provider"]
+    except (tomllib.TOMLDecodeError, KeyError, TypeError):
+        signals = []  # load_factory_toml below names the problem
+    if "newrelic" in signals and not (root / REL_NR).is_file():
+        writes[REL_NR] = newrelic_text()
+    if not (root / REL_REVIEW).is_file():
+        writes[REL_REVIEW] = REVIEW_TEMPLATE
+    _, conf = fl.load_factory_toml(root, writes)
+    for rel in (REL_TOML, REL_NR, REL_REVIEW):
+        if rel in writes:
+            line("preflight", write_mark(rel))
+        elif (root / rel).is_file():
+            line("preflight", f"exists {rel}")
+    return writes, conf
+
+
+def policy_status(ws):
+    return fl.compozy("extension", "exec", GHAR, "--cmd", "policy", "--workspace", ws)["result"]["structured"]
+
+
+def active_digest(ws):
+    active = policy_status(ws)["active"]
+    return active["digest"] if active["state"] == "approved" else None
+
+
+def policy_blocks(data):
+    """{lowercase owner/name: the exact lines of its [repos."owner/name"] table} of a policy file."""
+    blocks, key = {}, None
+    for text in data.decode().splitlines():
+        header = fl._HEADER.fullmatch(text.strip(" \t"))
+        if header:
+            key = header.group(1)[1:-1].lower()
+            blocks[key] = []
+        if key is not None:
+            blocks[key].append(text)
+    return {k: "\n".join(v).rstrip() for k, v in blocks.items()}
+
+
+def check_rules(where, entry, repo, base, release):
+    """The policy must give the repo factory.toml's delivery base and promotion pair (S6-5)."""
+    if entry["delivery_base"] != base or entry["promotion"] != {"head": base, "base": release}:
+        promo = entry["promotion"] and f"{entry['promotion']['head']} -> {entry['promotion']['base']}"
+        fl.refuse(f"{where} has delivery_base {entry['delivery_base']}, promotion {promo or 'none'} for {repo}; "
+                  f"factory.toml gives base {base}, promotion {base} -> {release}; edit the working copy by hand, "
+                  "then run bin/stage-policy")
+
+
+def preflight_policy(ws, conf, tty):
+    """None when the active version already serves the repo; else the plan of the new version."""
+    github = conf["roles"]["code"]["github"]
+    repo, base, release = github["repo"], github["base"], github["release"]
+    status = policy_status(ws)
+    working, _ = fl.policy_paths()
+    if Path(status["working"]["path"]) != working:
+        fl.refuse(f"github-app-review reads the policy working copy {status['working']['path']}, setup {working}; "
+                  "set the same GITHUB_APP_POLICY_FILE for both")
+    active = status["active"]
+    if active["state"] not in ("unset", "approved"):
+        fl.refuse(f"active policy {active['digest']} is {active['state']} ({active['error']}); fix it before setup")
+    old = active["digest"] if active["state"] == "approved" else None
+    served = fl.parse_policy(Path(active["path"]).read_bytes(), active["path"]) if old else {}
+    if repo.lower() in served:
+        check_rules("the active policy", served[repo.lower()], repo, base, release)
+        line("preflight", f"policy ok ({repo} served by the active version {fl.short(old)})")
+        return None
+    current = working.read_bytes() if working.is_file() else b""
+    listed = fl.parse_policy(current, working).get(repo.lower()) if current else None
+    if listed:
+        check_rules("the policy working copy", listed, repo, base, release)
+    plan = {"repo": repo, "old": old, "served": served, "working": working, "current": current, "data": None}
+    if listed:
+        new = current
+    else:
+        approvers = fl.ask_approvers(repo) if tty else None
+        _, new = fl.plan_policy(repo, fl.policy_block(repo, base, release, approvers or ["operator"]))
+        plan["data"] = new if tty else None
+    repos = fl.parse_policy(new, working)
+    removed = sorted(v["repo"] for k, v in served.items() if k not in repos)
+    changed = sorted(v["repo"] for k, v in served.items() if k in repos and repos[k] != v)
+    if removed or changed:
+        fl.refuse(f"the policy working copy drops or changes {', '.join(removed + changed)}, served by the active "
+                  "version; setup only adds a repository (edit the working copy by hand)")
+    shown = policy_blocks(new)
+    added = sorted(k for k in repos if k not in served)
+    for key in added:  # BR-12: the exact block of every repository the new version adds
+        text = shown[key]
+        if key == repo.lower() and not listed:
+            what = "setup adds this block to"
+            text = text if tty else text.replace('["operator"]', "<asked at the terminal>")
+        else:
+            what = "this block, already in"
+        line("preflight", f"policy: {what} the working copy {working}:")
+        print("\n".join("             " + t for t in text.splitlines()))
+    plan["digest"] = hashlib.sha256(new).hexdigest() if (tty or listed) else None
+    kept = ", ".join(sorted(v["repo"] for v in served.values())) or "none"
+    line("preflight", f"policy: active digest changes {fl.short(old) or 'unset'} -> "
+                      f"{fl.short(plan['digest']) or '<new>'} (repos kept: {kept}; "
+                      f"added: {', '.join(repos[k]['repo'] for k in added)})")
+    return plan
+
+
+def git_out(root, *args):
+    """stdout of a read-only git command in the checkout, or None when it fails."""
+    proc = fl.run("git", "-C", str(root), *args, check=False)
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def preflight_publish(root, conf, writes, refusing):
+    """S6-8/S6-9: what the PR and the staging need, read-only (no fetch), so a refusal comes before the switch."""
+    base = conf["roles"]["code"]["github"]["base"]
+    if git_out(root, "rev-parse", "--is-inside-work-tree") != "true":
+        fl.refuse(f"{root} is not a git checkout; setup opens a PR with the files")
+    if not git_out(root, "remote", "get-url", "origin"):
+        fl.refuse(f"{root} has no origin remote; setup opens a PR with the files")
+    branch = git_out(root, "symbolic-ref", "--short", "-q", "HEAD") or "(detached HEAD)"
+    line("preflight", f"checkout on branch {branch}")
+    if branch != base:
+        fl.refuse(f"the checkout is on {branch}, not the delivery base {base}; check out {base} "
+                  "(setup stages the files there), then re-run")
+    if fl.run("git", "-C", str(root), "diff", "--cached", "--quiet", check=False).returncode != 0:
+        fl.refuse("the checkout's index has staged changes; commit or unstage them, then re-run")
+    if not git_out(root, "rev-parse", "--verify", "-q", f"origin/{base}"):
+        fl.refuse(f"origin/{base} is unknown in the checkout; run git fetch origin, then re-run")
+    for rel in writes:  # base already has it: the checkout is behind (or nothing would be committed)
+        if git_out(root, "cat-file", "-e", f"origin/{base}:{rel}") is not None:
+            fl.refuse(f"{rel} exists on origin/{base} but not in the checkout; update the checkout (git pull), "
+                      "then re-run")
+    if refusing:  # BR-19: no GitHub call before a refusal
+        line("preflight", f"open a PR from branch {BRANCH} into {base} (branch not checked: no GitHub call before "
+                          "the refusal); stage the files in the checkout")
+        return
+    remote = git_out(root, "ls-remote", "--heads", "origin", BRANCH)
+    if remote is None:
+        fl.refuse(f"git ls-remote origin {BRANCH} failed")
+    if remote:
+        sha = remote.split()[0]
+        if git_out(root, "cat-file", "-e", sha) is None or any(
+                git_out(root, "show", f"{sha}:{rel}") != text.strip() for rel, text in writes.items()):
+            fl.refuse(f"branch {BRANCH} already exists on origin with other files (its PR is pending: merge it, or "
+                      "delete the branch to start over)")
+        line("preflight", f"branch {BRANCH} already on origin with these files; open or reuse its PR into {base}")
+    else:
+        line("preflight", f"open a PR from branch {BRANCH} into {base} with these files; stage them in the checkout")
+
+
+def preflight_labels(conf, refusing):
+    if refusing:  # BR-19: no GitHub call before a refusal
+        line("preflight", f"labels {', '.join(LABELS)} (not checked: no GitHub call before the refusal)")
+        return []
+    repo = conf["roles"]["code"]["github"]["repo"]
+    have = {label["name"] for label in json.loads(gh("label", "list", "--repo", repo, "--limit", "500",
+                                                     "--json", "name") or "[]")}
+    missing = [name for name in LABELS if name not in have]
+    line("preflight", f"create labels {', '.join(missing)}" if missing else "labels exist")
+    return missing
+
+
+def verify(ws, root, conf, allow):
+    """Adapters (BR-11) and the reviewer guard (BR-16), before any GitHub call."""
+    try:
+        for warning in fl.verify_adapters(root, conf, allow):
+            print(f"warning: {warning}; setting up anyway")
+        return fl.reviewer(ws)
+    except fl.Refused as exc:
+        fl.refuse(str(exc))
+
+
+def preflight_attach(ws, conf, guard):
+    listed = fl.compozy("agent", "instance", "list", "--workspace", ws, "--limit", "100")
+    existing = {i["agent_name"] for i in listed.get("instances", []) if i.get("state") != "archived"}
+    missing = [a for a in fl.team(conf) if a not in fl.ON_DEMAND and a not in existing]
+    for agent in missing:
+        pending = [s for s in fl.compozy("agent", "heartbeat", "sources", agent, "--workspace", ws).get("scripts", [])
+                   if not s.get("approved")]
+        if pending:
+            fl.refuse(f"{agent} source {pending[0]['name']} not approved; run "
+                      f"{fl.approve_source_command(agent, pending[0]['name'], pending[0]['sha256'])}")
+    line("preflight", (f"attach {len(missing)} agents; boundary turns" if missing else "attach ok (instances exist)")
+         + f"; reviewer guard ok ({guard.split(' (')[0]})")
+    return missing
+
+
+# ------------------------------------------------------------------------------------------------ apply
+
+def set_digest(digest):
+    if digest:
+        cz("extension", "secrets", "set", GHAR, "--env", fl.POLICY_DIGEST_ENV, "--value-stdin", stdin=digest)
+    else:
+        cz("extension", "secrets", "unset", GHAR, "--env", fl.POLICY_DIGEST_ENV)
+
+
+def switch(ws, digest):
+    """Set GITHUB_APP_POLICY_DIGEST and verify it active, restarting the extension once (BR-15)."""
+    set_digest(digest)
+    if active_digest(ws) == digest:
+        return True
+    cz("extension", "disable", GHAR)
+    cz("extension", "enable", GHAR)
+    return active_digest(ws) == digest
+
+
+FAILURES = (RuntimeError, ValueError, OSError, KeyError, TypeError)
+FAILED = object()
+
+
+def rollback(ws, old):
+    """Best effort, in order: set the digest back, restart when stale, always enable, verify; else the manual steps."""
+    errors = []
+
+    def attempt(step):
+        try:
+            return step()
+        except FAILURES as exc:
+            errors.append(str(exc))
+            return FAILED
+
+    attempt(lambda: set_digest(old))
+    if attempt(lambda: active_digest(ws)) != old:
+        attempt(lambda: cz("extension", "disable", GHAR))
+    attempt(lambda: cz("extension", "enable", GHAR))
+    if attempt(lambda: active_digest(ws)) == old:
+        line("policy", f"{fl.POLICY_DIGEST_ENV} set back to {fl.short(old) or 'unset'}; verified active, "
+                       "extension enabled")
+        return
+    restore = fl.activate_line(old) if old else f"compozy extension secrets unset {GHAR} --env {fl.POLICY_DIGEST_ENV}"
+    line("policy", f"{fl.POLICY_DIGEST_ENV} set back NOT verified ({'; '.join(errors) or 'active digest differs'}); "
+                   "run by hand:")
+    for command in (restore, f"compozy extension enable {GHAR}",
+                    f"compozy extension exec {GHAR} --cmd policy --workspace {ws} -o json"):
+        print(f"             {command}")
+
+
+def smoke(ws, plan):
+    """pr_context on one repo the previous version served; (ok, text)."""
+    others = sorted(v["repo"] for k, v in plan["served"].items() if k != plan["repo"].lower())
+    if not others:
+        return True, "no repository served before (first version): smoke skipped"
+    repo = others[0]
+    prs = json.loads(gh("pr", "list", "--repo", repo, "--state", "all", "--limit", "1", "--json", "number") or "[]")
+    if not prs:
+        return True, f"{repo} has no pull request: smoke skipped"
+    proc = subprocess.run(["compozy", "tool", "invoke", "ext__github_app_review__pr_context", "--workspace", ws,
+                           "-o", "json", "--input", json.dumps({"repo": repo, "number": prs[0]["number"]})],
+                          capture_output=True, text=True)
+    status = json.loads(proc.stdout).get("status") if proc.returncode == 0 and proc.stdout.strip() else None
+    if status != "completed":
+        return False, f"{repo} pr_context #{prs[0]['number']} failed ({(proc.stderr or proc.stdout).strip()[:200]})"
+    return True, f"{repo} still served (pr_context smoke ok)"
+
+
+def apply_policy(ws, plan):
+    working = plan["working"]
+    if (working.read_bytes() if working.is_file() else b"") != plan["current"]:
+        fl.refuse(f"the policy working copy {working} changed during setup; nothing staged or switched")
+    if plan["data"] is not None:
+        fl.write_working_copy(working, plan["data"])
+        line("policy", f"working copy {working} updated")
+    try:
+        status, digest, path = fl.stage_policy()
+    except ValueError as exc:
+        fl.refuse(str(exc))
+    if digest != plan["digest"]:
+        fl.refuse(f"the policy working copy changed during setup (staged {fl.short(digest)}); nothing switched")
+    line("policy", f"{status} policies/{path.name}")
+    try:  # S6-1: any failure from here on sets the digest back
+        ok, text = switch(ws, digest), "active digest not verified after a restart"
+        if ok:
+            line("policy", f"{fl.POLICY_DIGEST_ENV} set; active digest verified {fl.short(digest)} (old version kept)")
+            ok, text = smoke(ws, plan)
+            line("policy", text)
+    except FAILURES as exc:
+        ok, text = False, str(exc)
+    if not ok:
+        rollback(ws, plan["old"])
+        fl.refuse(f"policy switch not verified ({text}); no project file written")
+
+
+def publish(root, conf, writes):
+    """Open the reviewed PR carrying the files (US-011), then write them to the checkout, staged."""
+    github = conf["roles"]["code"]["github"]
+    base = github["base"]
+
+    def same_on_base(wt):
+        for rel, text in writes.items():
+            if (wt / rel).is_file() and (wt / rel).read_text() != text:
+                fl.refuse(f"{rel} exists on origin/{base} with other content; update the checkout, then re-run")
+
+    number = fl.publish(root, base, github["repo"], BRANCH, writes, PR_TITLE, PR_BODY,
+                        "protected paths: review it and merge it outside the factory", before=same_on_base)
+    for rel, text in writes.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+    fl.run("git", "-C", str(root), "add", "--", *writes)
+    return number
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("workspace")
+    parser.add_argument("--from", dest="source", help="factory.toml to copy when the project has none")
+    parser.add_argument("--allow-unsupported-adapter", action="store_true",
+                        help="set up even when an adapter has no passing conformance record")
+    args = parser.parse_args()
+    ws, tty = args.workspace, sys.stdin.isatty()
+    root = fl.workspace_root(ws)
+
+    writes, conf = preflight_files(root, args.source)
+    if providers(conf, "code") != ["github"]:
+        fl.refuse("bin/setup supports the code provider github (v1 adapters)")
+    guard = verify(ws, root, conf, args.allow_unsupported_adapter)
+    preflight_extensions(conf)
+    plan = preflight_policy(ws, conf, tty) if GHAR in providers(conf, "review") else None
+    refusing = plan is not None and not tty
+    if writes:
+        preflight_publish(root, conf, writes, refusing)
+    labels = preflight_labels(conf, refusing)
+    agents = preflight_attach(ws, conf, guard)
+    if refusing:
+        fl.refuse("policy confirmation needs an interactive terminal")
+    if not (writes or plan or labels or agents):
+        line("setup", "nothing to apply: every step ok/exists")
+        return 0
+    if (ask("apply all of the above? [y/N] ") or "").lower() not in ("y", "yes"):
+        fl.refuse("not confirmed; nothing applied")
+
+    if plan:
+        apply_policy(ws, plan)
+    if writes:
+        number = publish(root, conf, writes)
+        fl.load_factory_toml(root)
+        for rel, tag, note in ((REL_TOML, "factory", ""), (REL_NR, "newrelic", ""),
+                               (REL_REVIEW, "review", " from template (edit it)")):
+            if rel in writes:
+                line(tag, f"{rel} written{note}")
+        line("checkout", f"the files are staged in the checkout, identical to PR #{number}: `git pull` after the "
+                         "merge fast-forwards over them")
+    repo = conf["roles"]["code"]["github"]["repo"]
+    for name in labels:
+        color, text = LABELS[name]
+        gh("label", "create", name, "--repo", repo, "--color", color, "--description", text, "--force")
+    if labels:
+        line("labels", f"created {', '.join(labels)}")
+    if agents:
+        proc = subprocess.run([str(BIN / "attach"), ws] + (["--allow-unsupported-adapter"]
+                                                            if args.allow_unsupported_adapter else []),
+                              capture_output=True, text=True)
+        for text in proc.stdout.splitlines():
+            line("attach", text)
+        if proc.returncode != 0:
+            print(proc.stderr.strip(), file=sys.stderr)
+            return 1
+    if writes:
+        line("todo", f"review and merge PR #{number} outside the factory (protected paths)")
+    line("todo", "ruleset: 1 approval + dismiss stale approvals, no bypass actor")
+    if GHAR in providers(conf, "review"):
+        line("todo", f"App installation includes {repo}")
+    if "github-deployments" in providers(conf, "deploy"):
+        env = (conf["roles"]["deploy"]["github-deployments"].get("environment")
+               or conf["roles"]["code"]["github"]["release"])
+        line("todo", f"the deploy tool reports GitHub Deployments for environment {env}")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (RuntimeError, ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)

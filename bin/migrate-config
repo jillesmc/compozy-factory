@@ -16,11 +16,9 @@ never reads or prints a secret. A file already in the role grammar is reported `
 """
 import argparse
 import json
-import os
 import re
 import subprocess
 import sys
-import tempfile
 import tomllib
 from pathlib import Path
 
@@ -32,6 +30,11 @@ REL_TOML, REL_NR = ".compozy/factory/factory.toml", ".compozy/newrelic.toml"
 MAPPED = {"repo": {"github", "base", "release", "merge"}, "ci": {"runner"}, "review": {"extension", "repo", "agent"},
           "deploy": {"environment"}, "newrelic": {"account_id", "app_name"}}
 FIRST = ("language", "authorization", "team", "runtime")
+PR_TITLE = "chore: migrate factory.toml to the role grammar"
+PR_BODY = ("Converts `.compozy/factory/factory.toml` to the role grammar (`[roles.*]`) and moves the New Relic "
+           "app and account to `.compozy/newrelic.toml`, written by `bin/migrate-config`.\n\n"
+           "Both files are protected paths: the factory never merges this PR. Review it and merge it outside "
+           "the factory as part of the activation runbook (agents paused).")
 HEADER = ("# Factory configuration (role grammar). Migrated by compozy-factory bin/migrate-config; the old\n"
           "# file's comments are in git history. Changes go through PRs (this file is a protected path).\n")
 
@@ -133,101 +136,6 @@ def convert(old):
     return new, newrelic, repo["github"], repo["base"], repo["release"]
 
 
-def run(*args, cwd=None, check=True):
-    env = {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")}  # keyring login for gh
-    proc = subprocess.run(list(args), cwd=cwd, capture_output=True, text=True, env=env)
-    if check and proc.returncode != 0:
-        raise RuntimeError(f"{' '.join(args[:3])}: {(proc.stderr or proc.stdout).strip()[:400]}")
-    return proc
-
-
-def policy_block(repo, base, release, approvers):
-    return (f'[repos."{repo}"]\ndelivery_base = "{base}"\npromotion = {{ head = "{base}", base = "{release}" }}\n'
-            f"approvers = [{', '.join(json.dumps(a) for a in approvers)}]\n")
-
-
-def plan_policy(repo, block):
-    """(working path, new working-copy bytes or None when it already holds this block); refuses a conflict."""
-    working, _ = fl.policy_paths()
-    current = working.read_bytes() if working.is_file() else b""
-    want = fl.parse_policy(block.encode(), "block")[repo.lower()]
-    have = fl.parse_policy(current, working).get(repo.lower()) if current else None
-    if have == want:
-        return working, None
-    if have:
-        fl.refuse(f'policy working copy {working} already has [repos."{have["repo"]}"] with other values; '
-                  "edit it by hand, then run bin/stage-policy")
-    sep = b"" if not current or current.endswith(b"\n\n") else b"\n" if current.endswith(b"\n") else b"\n\n"
-    data = current + sep + block.encode()
-    fl.parse_policy(data, working)
-    return working, data
-
-
-def ask_approvers(repo):
-    answer = input(f"approvers  promotion approvers for {repo} (comma-separated GitHub logins): ")
-    logins = [a.strip().lstrip("@") for a in answer.split(",") if a.strip()]
-    if not logins or any(not re.fullmatch(r"[A-Za-z0-9-]+", a) for a in logins):
-        fl.refuse("approvers must be one or more GitHub logins separated by commas")
-    return logins
-
-
-def remote_branch_files(root):
-    """{rel: text} of the migration branch on origin, or None when it does not exist."""
-    if not run("git", "-C", str(root), "ls-remote", "--heads", "origin", BRANCH).stdout.strip():
-        return None
-    run("git", "-C", str(root), "fetch", "--quiet", "origin", BRANCH)
-    return {rel: run("git", "-C", str(root), "show", f"FETCH_HEAD:{rel}", check=False).stdout
-            for rel in (REL_TOML, REL_NR)}
-
-
-def push_branch(root, base, toml_text, nr_text, toml_bytes):
-    """Branch factory/migrate-roles from origin/<base> in a temporary worktree, commit and push."""
-    tmp = Path(tempfile.mkdtemp(prefix="migrate-config-"))
-    wt = tmp / "wt"
-    run("git", "-C", str(root), "worktree", "add", "--quiet", "--detach", str(wt), f"origin/{base}")
-    try:
-        if (wt / REL_TOML).read_bytes() != toml_bytes:
-            fl.refuse(f"the checkout's {REL_TOML} differs from origin/{base}; update the checkout, then re-run")
-        (wt / REL_TOML).write_text(toml_text)
-        (wt / REL_NR).write_text(nr_text)
-        fl.load_factory_toml(wt)  # the PR carries a file the factory accepts, or nothing is pushed
-        run("git", "add", REL_TOML, REL_NR, cwd=wt)
-        run("git", "commit", "--quiet", "-m", "chore: migrate factory.toml to the role grammar", cwd=wt)
-        print(f"branch     {BRANCH} from origin/{base}, ", end="")
-        run("git", "push", "--quiet", "origin", f"HEAD:refs/heads/{BRANCH}", cwd=wt)
-        print("pushed")
-    finally:
-        run("git", "-C", str(root), "worktree", "remove", "--force", str(wt), check=False)
-        if tmp.exists() and not any(tmp.iterdir()):
-            tmp.rmdir()
-
-
-def publish(root, base, repo, toml_text, nr_text, toml_bytes):
-    """Push the branch (or accept an identical one left by an interrupted run, H-5) and open or reuse the PR."""
-    run("git", "-C", str(root), "fetch", "--quiet", "origin", base)
-    existing = remote_branch_files(root)
-    if existing is None:
-        push_branch(root, base, toml_text, nr_text, toml_bytes)
-    elif existing == {REL_TOML: toml_text, REL_NR: nr_text}:
-        print(f"branch     {BRANCH} already on origin with these files (an earlier run pushed it)")
-    else:
-        fl.refuse(f"branch {BRANCH} already exists on origin with other files (a migration PR is pending: "
-                  "merge it, or delete the branch to start over)")
-    listed = json.loads(run("gh", "pr", "list", "--repo", repo, "--head", BRANCH, "--state", "open",
-                            "--json", "number").stdout or "[]")
-    if listed:
-        print(f"pr         #{listed[0]['number']} already open into {base}")
-        return
-    body = ("Converts `.compozy/factory/factory.toml` to the role grammar (`[roles.*]`) and moves the New Relic "
-            "app and account to `.compozy/newrelic.toml`, written by `bin/migrate-config`.\n\n"
-            "Both files are protected paths: the factory never merges this PR. Review it and merge it outside "
-            "the factory as part of the activation runbook (agents paused).")
-    url = run("gh", "pr", "create", "--repo", repo, "--base", base, "--head", BRANCH,
-              "--title", "chore: migrate factory.toml to the role grammar", "--body", body).stdout.strip()
-    number = url.rstrip("/").rsplit("/", 1)[-1]
-    print(f"pr         #{number} opened into {base} (the reviewer flags the factory.toml change for you)")
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("workspace")
@@ -258,19 +166,21 @@ def main():
         fl.refuse("promotion approvers need an interactive terminal (stdin is not a TTY)")
     print(f"converted  {REL_TOML} ({len([s for s in fl.OLD_SECTIONS if s in old])} sections → [roles.*])")
     print(f"newrelic   {REL_NR} (app, account_id from the old [newrelic])")
-    block = policy_block(repo, base, release, ask_approvers(repo))
+    block = fl.policy_block(repo, base, release, fl.ask_approvers(repo))
     try:
-        working, data = plan_policy(repo, block)
+        working, data = fl.plan_policy(repo, block)
     except ValueError as exc:
         fl.refuse(f"policy working copy: {exc}")
-    publish(root, base, repo, toml_text, nr_text, toml_bytes)
+    def same_base(wt):
+        if (wt / REL_TOML).read_bytes() != toml_bytes:
+            fl.refuse(f"the checkout's {REL_TOML} differs from origin/{base}; update the checkout, then re-run")
+
+    fl.publish(root, base, repo, BRANCH, {REL_TOML: toml_text, REL_NR: nr_text}, PR_TITLE, PR_BODY,
+               "the reviewer flags the factory.toml change for you", before=same_base)
     if data is None:
         print(f"policy     working copy {working} already has this block for {repo}")
     else:
-        working.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        tmp = working.with_name(working.name + ".tmp")
-        tmp.write_bytes(data)
-        os.replace(tmp, working)
+        fl.write_working_copy(working, data)
         print(f"policy     working copy {working} updated with:")
         print("\n".join("           " + line for line in block.splitlines()))
     stage = subprocess.run([str(Path(__file__).resolve().parent / "stage-policy")], capture_output=True, text=True)
