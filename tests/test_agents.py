@@ -89,6 +89,9 @@ def test_prompts_read_factory_toml_and_refuse_on_missing_keys():
     merge = skill_text("factory-code-github").split("## code.pr_merge")[1].split("## ")[0]
     assert "--merge --match-head-commit <head>" in merge and "never\n`--squash`, `--rebase`, `--auto` or `--admin`" in merge
     assert 'refused: factory.toml [roles.code] merge must be "merge"' in gatekeeper
+    deploy_ok = gatekeeper.split("4. Deploy ok.")[1].split("\n5. ")[0]  # closed train issues lose factory:* state labels
+    assert "`code.issue_labels` (remove only)" in deploy_ok and "keep `factory`)" in deploy_ok
+    assert all(f"`factory:{s}`" in deploy_ok for s in ("in-progress", "blocked", "deliver"))
     assert set(fl.POSTS) == set(fi.TEXT), "attach and factory_intake.py support the same post languages"
     reviewer = agent_text("factory-reviewer")  # its grammar has no refused:, the missing config is a failed: code
     assert ".compozy/factory/factory.toml" in reviewer and "failed: #<pr> factory_toml_missing" in reviewer
