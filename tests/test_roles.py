@@ -240,13 +240,16 @@ def test_fr_ut_017_key_format_spelling():
 
 # ---------------------------------------------------------------- UT-018, UT-019, UT-047, UT-048: conformance
 
-def test_fr_ut_018_019_unsupported_adapter_needs_the_flag(fake, workspace, installed):
-    proc = attach(workspace, installed)
+def test_fr_ut_018_019_unsupported_adapter_needs_the_flag(fake, workspace, repo, home_env):
+    # The repo copy has no conformance/, so no bundled adapter has a record whatever the checkout ships.
+    assert not (repo / "conformance").exists()
+    assert run("install", env=home_env, repo_root=repo).returncode == 0
+    proc = attach(workspace, home_env, repo_root=repo)
     assert proc.returncode == 1
     assert proc.stdout.strip() == ("refused: adapter signals/newrelic is not supported (conformance record missing); "
                                    "pass --allow-unsupported-adapter")
     assert [c for c in fake.calls if c[:3] == ["agent", "instance", "create"]] == []
-    proc = attach(workspace, installed, "--allow-unsupported-adapter")
+    proc = attach(workspace, home_env, "--allow-unsupported-adapter", repo_root=repo)
     assert proc.returncode == 0, proc.stdout
     warnings = [line for line in proc.stdout.splitlines() if line.startswith("warning: ")]
     assert len(warnings) == 5 and "warning: adapter work/jira is not supported (conformance record missing); attaching anyway" in warnings
