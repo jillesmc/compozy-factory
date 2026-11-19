@@ -3,7 +3,9 @@
 
 Usage: bin/reload <workspace> [agent...]   # no agent = factory.toml [team] agents (default: all six)
 
-On-demand agents (factory-reviewer) have no instance and are skipped.
+First the reviewer guard (`factory_guard.py reviewer`, BR-16): on refusal nothing is archived. On-demand
+agents (factory-reviewer) have no instance and are skipped. Each recreated main session gets one boundary
+prompt (workaround for compozy/compozy#1815): `boundary <agent> ok`.
 
 `clear-main` is not enough: it keeps the same session id and the provider recorded in it.
 Agent memory and approvals (script/authority) belong to the agent definition and stay.
@@ -28,7 +30,14 @@ def main():
     parser.add_argument("agents", nargs="*")
     args = parser.parse_args()
     ws = args.workspace
-    for agent in args.agents or default_agents(ws):
+    agents = args.agents or default_agents(ws)
+    if any(agent not in fl.ON_DEMAND for agent in agents):
+        try:
+            print(f"reviewer {fl.reviewer(ws)}")
+        except fl.Refused as exc:
+            fl.refuse(str(exc))
+    failed = False
+    for agent in agents:
         if agent in fl.ON_DEMAND:
             print(f"skipped {agent} (on-demand)")
             continue
@@ -37,11 +46,13 @@ def main():
             fl.compozy("agent", "instance", "archive", agent, "--workspace", ws)
         except RuntimeError:
             print("   (no active instance)")
-        fl.compozy("agent", "instance", "create", agent, "--workspace", ws)
+        created = fl.compozy("agent", "instance", "create", agent, "--workspace", ws)
         listed = fl.compozy("agent", "instance", "list", "--workspace", ws, "--agent", agent)
         for inst in listed.get("instances", []):
             if inst["agent_name"] == agent and inst.get("state") != "archived":
                 print(f"   main: {inst.get('main_session_id')} provider: {inst.get('provider')}")
+        failed |= not fl.boundary(agent, ws, created["instance"])
+    sys.exit(1 if failed else 0)
 
 
 if __name__ == "__main__":

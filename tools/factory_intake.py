@@ -1,17 +1,25 @@
 #!/usr/bin/env python3
-"""Turn one New Relic finding (sent by the factory-sentinel agent) into a CompozyOS task + mirrored GitHub issue.
+"""Turn one signals finding (sent by the factory-sentinel) into a CompozyOS task + mirrored code issue.
 
-Run from the workspace root. Reads `.compozy/factory/factory.toml` ([repo] github, [language] posts).
+Run from the workspace root. Reads `.compozy/factory/factory.toml`: `[language] posts`, `[roles.code]`
+(issues are created with the code/github operations code.label_ensure, code.issue_create and
+code.issue_comment, so `[roles.code] provider` must be "github") and `[roles.work]`.
 
-Usage (finding JSON on stdin, the finding object the factory-sentinel builds):
-    factory_intake.py check  --app <app_name>   -> {"duplicate": bool, "fingerprint", "issue_url", "task_dir"}
-    factory_intake.py create --app <app_name>   -> {"task_slug", "task_dir", "issue_number", "issue_url"}
+Usage (finding JSON on stdin: the finding the factory-sentinel builds, with its `envelope`, the
+factory.finding/v1 envelope of `factory_envelope.py wrap`):
+    factory_intake.py check   -> {"duplicate": bool, "fingerprint", "issue_url", "task_dir"}
+    factory_intake.py create  -> {"task_slug", "task_dir", "issue_number", "issue_url", "work_key"}
 
-Dedupe key: app + error_class + transaction. A finding is a duplicate when an OPEN issue labelled
-`factory` (or the legacy `fabrica`) or a not-completed task under .compozy/tasks/ already carries its fingerprint.
+The service (e.g. the New Relic app), error class and location come from the envelope's
+`fingerprint_inputs` (the signals adapter's normalize); the factory computes the fingerprint
+(factory_envelope.fingerprint, equal to the former app + error_class + transaction key). A finding is a
+duplicate when an OPEN issue labelled `factory` (or the legacy `fabrica`) or a not-completed task under
+.compozy/tasks/ already carries its fingerprint. When `[roles.work] provider` equals the code provider
+(BR-5) the issue is the work item: `create` titles it with the work adapter's `key_format` (`#<n>: …`,
+read from the installed, digest-checked adapter) and returns that `work_key`; otherwise `work_key` is
+empty and the scribe performs work.create.
 """
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -20,22 +28,26 @@ import sys
 import tomllib
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import factory_envelope as fe  # noqa: E402
+import factory_guard as fg  # noqa: E402
+
 ROOT = Path.cwd()  # the workspace root; prompts run tools from there
 TASKS = ROOT / ".compozy" / "tasks"
 LABEL = "factory"
 COMPLETED = {"completed", "complete", "done", "finished"}
 COMPLEXITY = {"critical": "high", "high": "high", "medium": "medium", "low": "low"}
-REPO = ""        # [repo] github, set by main()
+REPO = ""        # [roles.code.github] repo, set by main()
 LANG = "pt-BR"   # [language] posts, set by main()
 # Posted text follows [language] posts; only these languages are supported (others are refused).
 TEXT = {
-    "pt-BR": {"intro": "Achado do New Relic (factory-sentinel) em", "field": "Campo", "value": "Valor",
+    "pt-BR": {"intro": "Achado de {provider} (factory-sentinel) em", "field": "Campo", "value": "Valor",
               "severity": "Severidade", "count": "Ocorrências", "window": "Janela", "transaction": "Transação",
-              "area": "Área suspeita", "proposal": "Proposta", "sample": "Amostra e NRQL",
+              "area": "Área suspeita", "proposal": "Proposta", "sample": "Amostra e consulta",
               "label": "Achado automático da factory", "comment": "🏭 **Task criada** em `{task}`. Próximo marco: QA ou PR."},
-    "en": {"intro": "New Relic finding (factory-sentinel) in", "field": "Field", "value": "Value",
+    "en": {"intro": "{provider} finding (factory-sentinel) in", "field": "Field", "value": "Value",
            "severity": "Severity", "count": "Occurrences", "window": "Window", "transaction": "Transaction",
-           "area": "Suspected area", "proposal": "Proposal", "sample": "Sample and NRQL",
+           "area": "Suspected area", "proposal": "Proposal", "sample": "Sample and query",
            "label": "Automatic factory finding", "comment": "🏭 **Task created** at `{task}`. Next milestone: QA or PR."},
 }
 
@@ -44,19 +56,25 @@ def text(key):
     return TEXT[LANG][key]
 
 
-def factory_value(section, key):
+def load_conf():
     path = ROOT / ".compozy" / "factory" / "factory.toml"
     if not path.is_file():
         sys.exit(f"refused: {path} missing")
-    value = tomllib.loads(path.read_text()).get(section, {}).get(key)
+    return tomllib.loads(path.read_text())
+
+
+def need(conf, section, key):
+    value = conf
+    for part in section.split("."):
+        value = value.get(part, {}) if isinstance(value, dict) else {}
+    value = value.get(key) if isinstance(value, dict) else None
     if value in (None, "", []):
         sys.exit(f"refused: factory.toml missing [{section}] {key}")
     return value
 
 
-def fingerprint(app, f):
-    key = "|".join(s.strip().lower() for s in (app, f["error_class"], f["transaction"]))
-    return hashlib.sha256(key.encode()).hexdigest()[:12]
+def facts_of(env):
+    return {"kind": "bugfix", "attached_doc": False, "origin": env["provider"], "touches_ci": False}
 
 
 def slug_for(f, fp):
@@ -92,7 +110,8 @@ def yq(s):
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def render_task(f, app, fp, slug, issue_url):
+def render_task(f, env, fp, slug, issue_url, work_key):
+    app, inputs = env["fingerprint_inputs"]["service"], env["fingerprint_inputs"]
     title = f"Task 1: {f['title']}"
     return f"""---
 status: pending
@@ -102,28 +121,30 @@ complexity: {COMPLEXITY.get(f['severity'], 'medium')}
 severity: {yq(f['severity'])}
 fingerprint: {yq(fp)}
 issue: {yq(issue_url)}
-app: {yq(app)}
-error_class: {yq(f['error_class'])}
-transaction: {yq(f['transaction'])}
+work_key: {yq(work_key)}
+signals_provider: {yq(env['provider'])}
+service: {yq(app)}
+error_class: {yq(inputs['error_class'])}
+location: {yq(inputs['location'])}
 ---
 
 # {title}
 
 ## Overview
 
-New Relic flagged this in `{app}` (severity {f['severity']}, {f.get('count', '?')} occurrence(s),
+{env['provider']} flagged this in `{app}` (severity {f['severity']}, {f.get('count', '?')} occurrence(s),
 {f.get('first_seen', '?')} → {f.get('last_seen', '?')}). Mirrored issue: {issue_url}
 
 ## Shippable Outcome
 
 - Outcome: {f.get('proposed_task', 'see the evidence below')}
 - Verify in this task: a regression test that reproduces the failure path and passes after the fix.
-- Integration verification: after deploy, the evidence NRQL below returns no new occurrences.
+- Integration verification: after deploy, the evidence query below returns no new occurrences.
 
 ## Evidence
 
-- Error class: `{f['error_class']}`
-- Transaction: `{f['transaction']}`
+- Error class: `{inputs['error_class']}`
+- Location: `{inputs['location']}`
 - Suspected area: {f.get('suspected_area', 'unknown')}
 
 Sample:
@@ -132,10 +153,10 @@ Sample:
 {f.get('sample', '')}
 ```
 
-NRQL:
+Query:
 
 ```sql
-{f['evidence_nrql']}
+{f['evidence_query']}
 ```
 
 ## Subtasks
@@ -146,16 +167,17 @@ NRQL:
 """
 
 
-def render_issue(f, app, fp, task_rel):
-    return f"""{text('intro')} **{app}**.
+def render_issue(f, env, fp, task_rel):
+    app, inputs = env["fingerprint_inputs"]["service"], env["fingerprint_inputs"]
+    return f"""{text('intro').format(provider=env['provider'])} **{app}**.
 
 | {text('field')} | {text('value')} |
 |---|---|
 | {text('severity')} | {f['severity']} |
 | {text('count')} | {f.get('count', '?')} |
 | {text('window')} | {f.get('first_seen', '?')} → {f.get('last_seen', '?')} |
-| Error class | `{f['error_class']}` |
-| {text('transaction')} | `{f['transaction']}` |
+| Error class | `{inputs['error_class']}` |
+| {text('transaction')} | `{inputs['location']}` |
 | {text('area')} | {f.get('suspected_area', '?')} |
 
 **{text('proposal')}:** {f.get('proposed_task', '')}
@@ -167,27 +189,46 @@ def render_issue(f, app, fp, task_rel):
 ```
 
 ```sql
-{f['evidence_nrql']}
+{f['evidence_query']}
 ```
 </details>
 
 Task CompozyOS: `{task_rel}`
 
 <!-- factory-fingerprint: {fp} -->
+{fe.block(fe.FINDING, env)}
+{fe.block(fe.FACTS, facts_of(env))}
 """
 
 
-def check(app, f):
-    fp = fingerprint(app, f)
+def check(env):
+    fp = env["fingerprint"]
     issue, task = open_issue(fp), open_task(fp)
     return {"duplicate": bool(issue or task), "fingerprint": fp,
             "issue_url": issue["url"] if issue else "", "task_dir": str(task.relative_to(ROOT)) if task else ""}
 
 
-def create(app, f):
-    found = check(app, f)
+def work_key_format(conf):
+    """BR-5: when the issue is the work item, the work adapter's key_format (installed, tree-checked)."""
+    roles = conf.get("roles", {})
+    provider = roles.get("work", {}).get("provider")
+    if provider != roles.get("code", {}).get("provider"):
+        return None
+    try:
+        _, installed = fg.resolve(ROOT, "work", provider, conf)
+    except fg.Refused as exc:
+        sys.exit(f"refused: {exc}")
+    match = re.search(r"^key_format: (.*)$", (installed / "SKILL.md").read_text().split("\n---", 1)[0], re.M)
+    if not match:
+        sys.exit(f"refused: adapter work/{provider} has no key_format")
+    return json.loads(match.group(1))
+
+
+def create(conf, f, env):
+    found = check(env)
     if found["duplicate"]:
         sys.exit(f"duplicate finding, refusing to create: {json.dumps(found)}")
+    key_format = work_key_format(conf)
     fp = found["fingerprint"]
     slug = slug_for(f, fp)
     task_dir = TASKS / slug
@@ -195,10 +236,16 @@ def create(app, f):
     gh("label", "create", LABEL, "--repo", REPO, "--color", "5319E7", "--description", text("label"), "--force")
     # ponytail: issue first, then local files; if the local write fails the open issue still dedupes, fix by hand.
     issue = json.loads(gh("api", "-X", "POST", f"repos/{REPO}/issues", "--input", "-",
-                          stdin=json.dumps({"title": f"[factory] {f['title']}", "body": render_issue(f, app, fp, task_rel),
+                          stdin=json.dumps({"title": f"[factory] {f['title']}", "body": render_issue(f, env, fp, task_rel),
                                             "labels": [LABEL, "bug"]})))
+    work_key = ""
+    if key_format:
+        work_key = f"#{issue['number']}"
+        values = {"key": work_key, "id": str(issue["number"])}
+        gh("api", "-X", "PATCH", f"repos/{REPO}/issues/{issue['number']}", "-f",
+           "title=" + key_format["title_prefix"].format(**values) + f["title"])
     task_dir.mkdir(parents=True)
-    (task_dir / "task_01.md").write_text(render_task(f, app, fp, slug, issue["html_url"]))
+    (task_dir / "task_01.md").write_text(render_task(f, env, fp, slug, issue["html_url"], work_key))
     (task_dir / "_tasks.md").write_text(
         f'---\nschema_version: "compozy.tasks/v2"\nworkflow: {slug}\ngraph:\n  nodes:\n'
         f"    - id: task_01\n      file: task_01.md\n  edges: []\n---\n\n# {slug}\n\n"
@@ -206,23 +253,31 @@ def create(app, f):
     gh("api", "-X", "POST", f"repos/{REPO}/issues/{issue['number']}/comments", "-f",
        "body=" + text("comment").format(task=task_rel))
     return {"task_slug": slug, "task_dir": str(task_dir.relative_to(ROOT)),
-            "issue_number": issue["number"], "issue_url": issue["html_url"]}
+            "issue_number": issue["number"], "issue_url": issue["html_url"], "work_key": work_key}
 
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("cmd", choices=["check", "create"])
-    p.add_argument("--app", required=True)
     a = p.parse_args()
     global REPO, LANG
-    REPO, LANG = factory_value("repo", "github"), factory_value("language", "posts")
+    conf = load_conf()
+    LANG = need(conf, "language", "posts")
     if LANG not in TEXT:
         sys.exit(f'refused: [language] posts "{LANG}" not supported by factory_intake.py ({", ".join(TEXT)})')
+    provider = need(conf, "roles.code", "provider")
+    if provider != "github":
+        sys.exit(f'refused: factory_intake.py creates issues through code/github only ([roles.code] provider "{provider}")')
+    REPO = need(conf, "roles.code.github", "repo")
     f = json.load(sys.stdin)
-    missing = [k for k in ("title", "severity", "error_class", "transaction", "evidence_nrql") if not f.get(k)]
-    if missing or not a.app.strip():
-        sys.exit(f"finding is missing required fields: {missing or ['--app']}")
-    print(json.dumps((check if a.cmd == "check" else create)(a.app, f)))
+    missing = [k for k in ("title", "severity", "evidence_query", "envelope") if not f.get(k)]
+    if missing:
+        sys.exit(f"finding is missing required fields: {missing}")
+    try:
+        env = fe.envelope(f["envelope"])  # recomputes the fingerprint: never trusted from the input
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        sys.exit(f"refused: envelope: {exc}")
+    print(json.dumps(check(env) if a.cmd == "check" else create(conf, f, env)))
 
 
 if __name__ == "__main__":

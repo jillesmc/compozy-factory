@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# IT-001..IT-004 (factory-user-agents) and IT-007..IT-009 (factory-roles) against a real, isolated
-# CompozyOS daemon.
+# IT-001..IT-004 (factory-user-agents), IT-007..IT-009 and IT-001 (factory-roles: bin/migrate-config, then
+# bin/attach --dry-run) against a real, isolated CompozyOS daemon.
 #
 # Starts a throwaway daemon with its own COMPOZY_HOME, HTTP port and socket, runs the real
 # bin/install, bin/attach and bin/migrate-memory against it, checks the gatekeeper's tool allowlist, and stops it on exit. Every CLI call
@@ -25,8 +25,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Heartbeat wakes are off so no check-in turn ever runs. The agents' `claude-mm4` provider is
-# declared so instances can be created; sessions are lazy and no provider process is launched.
+# Heartbeat wakes are off so no check-in turn ever runs. The agents' providers (`claude-mm4`, and
+# `claude` for the auditor) run tests/it/fake-acp: instances can be created and the boundary prompt of
+# bin/attach gets its turn, but no real provider (no model, no operator credential) is ever launched.
 cat > "$HOME_DIR/config.toml" <<EOF
 [http]
 host = "127.0.0.1"
@@ -39,9 +40,16 @@ socket = "$T/daemon.sock"
 enabled = false
 
 [providers.claude-mm4]
-display_name = "Claude (mm4, IT)"
+display_name = "Claude (mm4, IT stub)"
 harness = "acp"
-command = "npx -y @agentclientprotocol/claude-agent-acp@latest"
+command = "$REPO/tests/it/fake-acp"
+runtime_provider = "claude"
+auth_mode = "native_cli"
+
+[providers.claude]
+display_name = "Claude (IT stub)"
+harness = "acp"
+command = "$REPO/tests/it/fake-acp"
 runtime_provider = "claude"
 auth_mode = "native_cli"
 
@@ -101,7 +109,8 @@ step "IT-002 attach scratch"
 cp "$REPO/factory.example.toml" "$SCRATCH/.compozy/factory/factory.toml"
 printf 'app = "acme-api-prod"\naccount_id = 1234567\n' > "$SCRATCH/.compozy/newrelic.toml"
 echo "attach by path: bin/attach $SCRATCH --allow-unsupported-adapter (no conformance records before the S5 walks)"
-iso "$REPO/bin/attach" "$SCRATCH" --allow-unsupported-adapter
+iso "$REPO/bin/attach" "$SCRATCH" --allow-unsupported-adapter | tee "$T/attach1.out"
+[ "$(grep -c '^boundary factory-.* ok$' "$T/attach1.out")" = 6 ] || { echo "expected one boundary prompt per attached agent"; exit 1; }
 cz agent instance list --workspace scratch -o json | json '
 act = sorted(i["agent_name"] for i in d["instances"] if i["state"] == "active")
 print("active instances:", " ".join(act))
@@ -178,7 +187,7 @@ if os.environ.get("EXT_ON"):
 if os.environ.get("NR_ON"):
     nr = sorted(t for t in pol if t.startswith("ext__newrelic__"))
     assert nr, "newrelic installed but no ext__newrelic__ tool registered"
-    want += nr
+    deny += nr  # the gatekeeper has no signals role: its allowlist dropped ext__newrelic__* (factory-roles S4)
 for tool in want + deny:
     print(f"factory-gatekeeper {tool}: {pol.get(tool)}")
 assert all(pol.get(t) == "allowed" for t in want), want
@@ -284,4 +293,44 @@ installed_c=$(python3 -c "import json; print(next(b['installed'] for b in json.l
 (cd "$WSC" && iso env STUB_TRACE="$T/trace.jsonl" python3 "$installed_c/ops.py" issue_comment 7 "hello")
 json 'print("provider effect recorded:", d)' < "$T/trace.jsonl"
 
-step "IT-001..IT-004, IT-007..IT-009 passed"
+step "factory-roles IT-001 bin/migrate-config on a copy of an old factory.toml, then bin/attach --dry-run"
+# MIGRATE_SOURCE=<path> runs it on a copy of the operator's file (default: the old-grammar fixture). git runs
+# against a local bare origin with an isolated git config; gh is a fake; the policy home is under $T.
+SRC=${MIGRATE_SOURCE:-$REPO/tests/fixtures/old-factory.toml}
+MIG=$T/migrate
+mkdir -p "$MIG/bin" "$MIG/cfg"
+printf '#!/bin/sh\ncase "$1 $2" in "pr list") echo "[]" ;; *) echo https://github.com/acme/acme-api/pull/1 ;; esac\n' \
+  > "$MIG/bin/gh"; chmod +x "$MIG/bin/gh"
+printf '[user]\n\tname = IT\n\temail = it@example.invalid\n' > "$MIG/gitconfig"
+gitm() { env GIT_CONFIG_GLOBAL="$MIG/gitconfig" GIT_CONFIG_NOSYSTEM=1 git "$@"; }
+BASE=$(python3 -c "import sys, tomllib; print(tomllib.load(open(sys.argv[1], 'rb'))['repo']['base'])" "$SRC")
+gitm init --quiet --bare "$MIG/origin.git"
+gitm init --quiet "$MIG/project"
+mkdir -p "$MIG/project/.compozy/factory"; cp "$SRC" "$MIG/project/.compozy/factory/factory.toml"
+(cd "$MIG/project" && gitm add . && gitm commit --quiet -m init && gitm remote add origin "$MIG/origin.git" &&
+  gitm push --quiet origin "HEAD:$BASE")
+env GIT_CONFIG_GLOBAL="$MIG/gitconfig" GIT_CONFIG_NOSYSTEM=1 PATH="$MIG/bin:$PATH" \
+  GITHUB_APP_POLICY_FILE="$MIG/cfg/policy.toml" python3 - "$REPO/bin/migrate-config" "$MIG/project" <<'EOF'
+import os, pty, subprocess, sys
+master, slave = pty.openpty()
+proc = subprocess.Popen(sys.argv[1:], stdin=slave)
+os.close(slave); os.write(master, b"octocat\n"); sys.exit(proc.wait())
+EOF
+mkdir -p "$MIG/migrated/.compozy/factory"
+for f in .compozy/factory/factory.toml .compozy/newrelic.toml; do
+  gitm -C "$MIG/project" show "origin/factory/migrate-roles:$f" > "$MIG/migrated/$f"
+done
+python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import factorylib as fl; from pathlib import Path
+_, c = fl.load_factory_toml(Path(sys.argv[2]))
+print('migrated factory.toml validates:', {r: c['roles'][r]['provider'] for r in fl.ROLES})" "$REPO/bin" "$MIG/migrated"
+cz workspace add "$MIG/migrated" --name migrated -o json | json 'print("workspace", d["name"], d["id"])'
+iso "$REPO/bin/attach" migrated --dry-run --allow-unsupported-adapter | tee "$T/dry.out"
+[ "$(grep -c '^would attach factory-' "$T/dry.out")" = 6 ] || { echo "attach --dry-run did not accept the migrated file"; exit 1; }
+cz agent instance list --workspace migrated -o json | json 'assert not d["instances"], d; print("dry-run created no instance")'
+
+step "factory-roles UT-029 on the real daemon: bin/reload runs the reviewer guard and gives the new main session its boundary turn"
+iso "$REPO/bin/reload" scratch factory-scribe | tee "$T/reload.out"
+grep -q '^reviewer factory-reviewer origin global layer user' "$T/reload.out"
+grep -q '^boundary factory-scribe ok$' "$T/reload.out"
+
+step "IT-001..IT-004, IT-007..IT-009 (factory-user-agents/factory-roles) and factory-roles IT-001 passed"

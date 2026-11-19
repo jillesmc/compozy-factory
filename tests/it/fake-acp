@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""A fake ACP agent for tests/it/run.sh: JSON-RPC on stdio, replies "ok" to every prompt.
+
+No model and no credential: it lets the isolated daemon give the boundary prompt of bin/attach and
+bin/reload its turn without launching a real provider.
+"""
+import json
+import sys
+
+MODELS = ["sonnet", "opus"]  # the factory agents' models
+
+
+def config(current="sonnet"):
+    return [{"type": "select", "id": "model", "name": "Model", "category": "model", "currentValue": current,
+             "options": [{"value": m, "name": m} for m in MODELS]}]
+
+
+def send(msg):
+    sys.stdout.write(json.dumps(msg) + "\n")
+    sys.stdout.flush()
+
+
+for line in sys.stdin:
+    try:
+        msg = json.loads(line)
+    except ValueError:
+        continue
+    if "id" not in msg or "method" not in msg:
+        continue
+    method, params = msg["method"], msg.get("params") or {}
+    if method == "initialize":
+        result = {"protocolVersion": params.get("protocolVersion", 1), "agentCapabilities": {}, "authMethods": []}
+    elif method == "session/new":
+        result = {"sessionId": "it-stub", "configOptions": config()}
+    elif method == "session/set_config_option":
+        result = {"configOptions": config(params.get("value", "sonnet"))}
+    elif method == "session/prompt":
+        send({"jsonrpc": "2.0", "method": "session/update", "params": {
+            "sessionId": params.get("sessionId"),
+            "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "ok"}}}})
+        result = {"stopReason": "end_turn"}
+    else:
+        result = {}
+    send({"jsonrpc": "2.0", "id": msg["id"], "result": result})

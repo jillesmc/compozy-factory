@@ -2,6 +2,7 @@
 import fnmatch
 import hashlib
 import json
+import os
 import re
 import sys
 import tomllib
@@ -318,5 +319,229 @@ def key_names(key_format, key, title, slug):
             "commit_scope": key_format["commit_scope"].format(**values)}
 
 
+BOUNDARY = "Operator: no action needed. Reply with one word: ok."
+
+
+def boundary(agent, ws, instance):
+    """Send the new main session its one boundary prompt (compozy/compozy#1815 workaround); False on failure."""
+    main = instance.get("main_session_id")
+    if not main:
+        listed = compozy("agent", "instance", "list", "--workspace", ws, "--agent", agent)
+        main = next((i.get("main_session_id") for i in listed.get("instances", [])
+                     if i.get("agent_name") == agent and i.get("state") != "archived"), None)
+    try:
+        if not main:
+            raise RuntimeError("no main session")
+        key = f"boundary-{instance.get('id', main)}"  # the CLI takes a retry identity only as this pair
+        compozy("session", "prompt", main, BOUNDARY, "--message-id", key, "--idempotency-key", key)
+    except RuntimeError as exc:
+        print(f"refused: boundary {agent} failed ({exc})")
+        return False
+    print(f"boundary {agent} ok")
+    return True
+
+
 def team(conf):
     return conf.get("team", {}).get("agents") or AGENTS
+
+
+# ---------------------------------------------------------------- github-app-review policy (F1, BR-15)
+# A Python port of compozy-github-app src/policy.ts (0.3.0, docs/policy.md): the same strict TOML subset
+# and schema, so bin/stage-policy stages exactly what the extension honors. tomllib is not used: it accepts
+# TOML the extension refuses (e.g. `[repos . "a/b"]`, multi-line arrays, escapes).
+
+POLICY_FILE_ENV, POLICY_DIGEST_ENV = "GITHUB_APP_POLICY_FILE", "GITHUB_APP_POLICY_DIGEST"
+_REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+_BRANCH = re.compile(r"[A-Za-z0-9._/-]+")
+_LOGIN = re.compile(r"[A-Za-z0-9-]+")
+_KEY = re.compile(r"[A-Za-z0-9_-]+")
+# JS `.` stops at line terminators; JS `in` on `{}` also sees Object.prototype names (refused as duplicates).
+_HEADER = re.compile("\\[[ \t]*repos\\.(\"[^\"]*\"|'[^']*')[ \t]*\\][ \t]*(?:#[^\n\r  ]*)?")
+_PROTO = {"constructor", "__proto__", "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString",
+          "toString", "valueOf", "__defineGetter__", "__defineSetter__", "__lookupGetter__", "__lookupSetter__"}
+
+
+def policy_paths(env=None):
+    """(working copy, versions dir) exactly as the extension resolves them."""
+    env = os.environ if env is None else env
+    xdg, home = (env.get("XDG_CONFIG_HOME") or "").strip(), (env.get("HOME") or "").strip()
+    config = Path(xdg) if xdg and os.path.isabs(xdg) else Path(home if home and os.path.isabs(home)
+                                                                else os.path.expanduser("~")) / ".config"
+    file = (env.get(POLICY_FILE_ENV) or "").strip()
+    if file and not os.path.isabs(file):
+        raise ValueError(f"{POLICY_FILE_ENV} must be an absolute path")
+    working = Path(file) if file else config / "compozy-github-app" / "policy.toml"
+    return working, working.parent / "policies"
+
+
+def _policy_value(line, i, fail):
+    def ch():
+        return line[i] if i < len(line) else ""
+
+    def space():
+        nonlocal i
+        while ch() in (" ", "\t") and ch():
+            i += 1
+
+    def text():
+        nonlocal i
+        quote = ch()
+        if quote not in ('"', "'") or not quote:
+            fail("expected a quoted string")
+        end = line.find(quote, i + 1)
+        if end < 0:
+            fail("unterminated string")
+        value = line[i + 1:end]
+        if quote == '"' and "\\" in value:
+            fail("escapes are not supported")
+        i = end + 1
+        return value
+
+    if ch() == "[":
+        value, i = [], i + 1
+        space()
+        while ch() != "]":
+            value.append(text())
+            space()
+            if ch() == ",":
+                i += 1
+            elif ch() != "]":
+                fail("expected , or ] in array")
+            space()
+        i += 1
+    elif ch() == "{":
+        value, i = {}, i + 1
+        space()
+        while ch() != "}":
+            match = _KEY.match(line, i)
+            if not match:
+                fail("expected a key in inline table")
+            key = match.group(0)
+            if key in value or key in _PROTO:
+                fail(f"duplicate key {key}")
+            i += len(key)
+            space()
+            if ch() != "=":
+                fail("expected = in inline table")
+            i += 1
+            space()
+            value[key] = text()
+            space()
+            if ch() == ",":
+                i += 1
+                space()
+                if ch() == "}":
+                    fail("trailing comma in inline table")
+            elif ch() != "}":
+                fail("expected , or } in inline table")
+        i += 1
+    else:
+        value = text()
+    space()
+    if i < len(line) and line[i] != "#":
+        fail("unexpected text after value")
+    return value
+
+
+def parse_policy(data, path):
+    """Validate policy bytes; return {lowercase owner/name: {repo, delivery_base, promotion, approvers}}.
+    Raises ValueError('<path>[:<line>]: <reason>') on anything the extension refuses (config_invalid)."""
+    try:
+        source = data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError(f"{path}: not valid UTF-8") from None
+    if source.startswith("﻿"):
+        raise ValueError(f"{path}: byte order mark (BOM) not allowed")
+    raw, current = {}, None
+    for index, full in enumerate(source.split("\n")):
+        line = full[:-1] if full.endswith("\r") else full
+
+        def fail(message, index=index):
+            raise ValueError(f"{path}:{index + 1}: {message}")
+
+        if re.search("[\x00-\x08\x0b-\x1f\x7f]", line):
+            fail("control character")
+        trimmed = re.sub(r"^[ \t]+|[ \t]+$", "", line)
+        if trimmed == "" or trimmed.startswith("#"):
+            continue
+        header = _HEADER.fullmatch(trimmed)
+        if header:
+            repo = header.group(1)[1:-1]
+            if not _REPO.fullmatch(repo):
+                fail(f'repos."{repo}": expected owner/name')
+            if repo.lower() in raw:
+                fail(f'repos."{repo}": duplicate repository')
+            current = {}
+            raw[repo.lower()] = (repo, index + 1, current)
+            continue
+        if trimmed.startswith("["):
+            fail('only [repos."owner/name"] tables are allowed')
+        if current is None:
+            fail('key outside a [repos."owner/name"] table')
+        assignment = re.match(r"([A-Za-z0-9_-]+)[ \t]*=[ \t]*", trimmed) or fail("expected key = value")
+        key = assignment.group(1)
+        if key in current or key in _PROTO:
+            fail(f"duplicate key {key}")
+        current[key] = _policy_value(trimmed, assignment.end(), fail)
+    repos = {}
+    for lower, (repo, number, fields) in raw.items():
+        def fail(message, repo=repo, number=number):
+            raise ValueError(f'{path}:{number}: repos."{repo}": {message}')
+
+        unknown = next((k for k in fields if k not in ("delivery_base", "promotion", "approvers")), None)
+        if unknown:
+            fail(f"unknown key {unknown}")
+
+        def branch(value, name):
+            return value if isinstance(value, str) and _BRANCH.fullmatch(value) else fail(
+                f"{name} must be a branch name ([A-Za-z0-9._/-]+)")
+        base, promotion = branch(fields.get("delivery_base"), "delivery_base"), None
+        if "promotion" in fields:
+            p = fields["promotion"]
+            if not isinstance(p, dict) or sorted(p) != ["base", "head"]:
+                fail('promotion must be { head = "…", base = "…" }')
+            promotion = {"head": branch(p["head"], "promotion.head"), "base": branch(p["base"], "promotion.base")}
+            if promotion["head"] != base:
+                fail(f"promotion.head must equal delivery_base ({base})")
+            if promotion["base"] == base:
+                fail("promotion.base must differ from delivery_base")
+        approvers = fields.get("approvers", [])
+        if not isinstance(approvers, list) or any(not _LOGIN.fullmatch(a) for a in approvers):
+            fail("approvers must be an array of GitHub logins")
+        if promotion and not approvers:
+            fail("approvers are required when promotion is set")
+        repos[lower] = {"repo": repo, "delivery_base": base, "promotion": promotion, "approvers": approvers}
+    return repos
+
+
+def activate_line(digest):
+    return (f"printf {digest} | compozy extension secrets set github-app-review "
+            f"--env {POLICY_DIGEST_ENV} --value-stdin")
+
+
+def stage_policy(env=None):
+    """Byte-copy the schema-checked working copy to policies/<sha256>.toml (dir 0700, file 0444, never
+    overwritten). Returns (status staged|unchanged, digest, version path); raises ValueError."""
+    working, versions = policy_paths(env)
+    if not working.is_file():
+        raise ValueError(f"{working} does not exist")
+    data = working.read_bytes()
+    parse_policy(data, working)
+    digest = hashlib.sha256(data).hexdigest()
+    path = versions / f"{digest}.toml"
+    if path.exists():
+        if path.read_bytes() != data:
+            raise ValueError(f"{path} exists with other bytes; the operator removes it")
+        return "unchanged", digest, path
+    versions.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o444)
+        with os.fdopen(fd, "wb") as out:
+            out.write(data)
+        os.link(tmp, path)  # never replaces an existing version (unlike rename)
+    except OSError as exc:
+        raise ValueError(f"{path} could not be written ({exc.strerror})") from None
+    finally:
+        tmp.unlink(missing_ok=True)  # like the extension: a stale or failed temp file is removed, nothing staged
+    return "staged", digest, path

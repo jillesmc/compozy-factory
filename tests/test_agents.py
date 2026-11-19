@@ -10,18 +10,22 @@ sys.path.insert(0, str(REPO / "tools"))
 import factory_intake as fi  # noqa: E402
 
 IDENTITY = {  # _dx.md › Agent identities
-    "factory-sentinel": ("Factory Sentinel", "Reads New Relic errors, error logs and incidents for the project's app, classifies each signal and proposes to the operator which ones deserve an issue. Never opens issues or writes code."),
-    "factory-scribe": ("Factory Scribe", "Turns findings and reports into deduplicated GitHub issues and, when the item is actionable, into the official Jira work item with the required fields."),
+    "factory-sentinel": ("Factory Sentinel", "Reads the project's observability signals (errors, error logs, incidents), classifies each one and proposes to the operator which ones deserve an issue. Never opens issues or writes code."),
+    "factory-scribe": ("Factory Scribe", "Turns findings and reports into deduplicated code issues and, when the item is actionable, into the project's work item with the facts its tracker requires."),
     "factory-dispatcher": ("Factory Dispatcher", "Accepts issues released with `factory:deliver`, sizes them, dispatches implementation to an isolated worktree and hands the PR to the PR watcher."),
     "factory-pr-watcher": ("Factory PR Watcher", "Follows executor PRs until they are green and reviewed, returns failures and findings to the executor, and hands ready heads to the gatekeeper."),
-    "factory-gatekeeper": ("Factory Gatekeeper", "Revalidates ready PRs, merges them into the base branch, has the GitHub App open the promotion PR, merges it once the operator approves it on GitHub, and closes the Jira item after deploy."),
-    "factory-auditor": ("Factory Auditor", "One window after deploy, checks in New Relic whether a closed factory issue's problem is gone; records the evidence on the issue and in Jira and reopens what came back."),
+    "factory-gatekeeper": ("Factory Gatekeeper", "Revalidates ready PRs, merges them into the base branch, has the GitHub App open the promotion PR, merges it once the operator approves it on GitHub, and closes the work item after deploy."),
+    "factory-auditor": ("Factory Auditor", "One window after deploy, checks in the project's observability whether a closed factory issue's problem is gone; records the evidence on the issue and its work item and reopens what came back."),
     "factory-reviewer": ("Factory Reviewer", "Reviews one factory PR head and posts the review through the GitHub App. Reads code only; never runs it."),
 }
 REVIEW_TOOLS = ["ext__github_app_review__pr_context", "ext__github_app_review__submit_review"]
 DENYLIST = ["acme-reports", "acme-portal", "1234567", "ACME-", "acme",
             "codebuild-acme", "`staging`", "`production`"]
 OLD_NAMES = re.compile(r"\b([Ss]entinela|[Ee]scriv[aã]o|[Mm]aestro|vigia-pr|[Pp]orteiro)\b|(?<!factory-)\bauditor\b")
+
+
+def skill_text(name):
+    return (REPO / "skills" / name / "SKILL.md").read_text()
 
 
 def agent_text(name):
@@ -72,18 +76,23 @@ def test_prompts_read_factory_toml_and_refuse_on_missing_keys():
         assert "refused: factory.toml missing" in text
     for name in ("factory-scribe", "factory-dispatcher", "factory-pr-watcher", "factory-gatekeeper", "factory-auditor"):
         assert "{language.posts}" in agent_text(name), name
-    watcher = agent_text("factory-pr-watcher")
-    assert "runs-on: {ci.runner}" in watcher and "base `{repo.base}`" in watcher
+    watcher = agent_text("factory-pr-watcher")  # hygiene through the code role, CI rule in the adapter
+    assert "`code.check_hygiene`" in watcher and "base `{code.base}`" in watcher and "`ci_runner`" in watcher
+    assert "runs-on: {ci_runner}" in skill_text("factory-code-github")
     assert "python3 ~/.compozy/factory/tools/factory_intake.py" in agent_text("factory-scribe")
-    for name in ("factory-sentinel", "factory-auditor"):  # C-1: the account is pinned on every NRQL call
-        assert "`[newrelic] account_id`" in agent_text(name) and "account `{newrelic.account_id}`" in agent_text(name)
-    gatekeeper = agent_text("factory-gatekeeper")  # C-2: merge commit only
-    assert "--{repo.merge}" not in gatekeeper and gatekeeper.count("--merge --match-head-commit") == 3
-    assert 'refused: factory.toml [repo] merge must be "merge"' in gatekeeper
+    # C-1: the account is pinned on every query, now by the signals adapter the sentinel and auditor load
+    assert "pass `account_id` on every NRQL call" in skill_text("factory-signals-newrelic")
+    for name, op in (("factory-sentinel", "`signals.query_window`"), ("factory-auditor", "`signals.verify_gone`")):
+        assert op in agent_text(name) and "factory_guard.py adapter" in agent_text(name), name
+    gatekeeper = agent_text("factory-gatekeeper")  # C-2: merge commit only, through code.pr_merge
+    assert gatekeeper.count("`code.pr_merge`") >= 3 and "gh pr merge" not in gatekeeper
+    merge = skill_text("factory-code-github").split("## code.pr_merge")[1].split("## ")[0]
+    assert "--merge --match-head-commit <head>" in merge and "never\n`--squash`, `--rebase`, `--auto` or `--admin`" in merge
+    assert 'refused: factory.toml [roles.code] merge must be "merge"' in gatekeeper
     assert set(fl.POSTS) == set(fi.TEXT), "attach and factory_intake.py support the same post languages"
     reviewer = agent_text("factory-reviewer")  # its grammar has no refused:, the missing config is a failed: code
     assert ".compozy/factory/factory.toml" in reviewer and "failed: #<pr> factory_toml_missing" in reviewer
-    assert "{review.repo}" in reviewer and "{language.posts}" in reviewer
+    assert "{code.repo}" in reviewer and "{language.posts}" in reviewer
 
 
 def test_reviewer_is_on_demand_with_only_the_review_tools():
@@ -121,31 +130,31 @@ def test_ut_047_no_admin_bypass_in_any_agent():  # US-006.AC-3, BR-9, Safety Inv
 
 def test_watcher_reviews_each_head_and_gates_ready_on_merge_gate():  # US-004, US-006
     watcher = agent_text("factory-pr-watcher")
-    gate = '`ext__github_app_review__merge_gate` with `{"repo":"{review.repo}","number":<n>,"kind":"delivery"}`'
-    assert gate in watcher and "`[review] repo`, `[review] agent`" in watcher
-    assert "exactly `review: {review.repo}#<pr> <full-head-sha>`" in watcher and "`agent: {review.agent}`" in watcher
+    gate = "`review.gate` with kind `delivery`"
+    assert gate in watcher and "{review.agent}" not in watcher and "`[roles.review] provider`" in watcher
+    assert "exactly `review: {code.repo}#<pr> <full-head-sha>`" in watcher and "`agent: factory-reviewer`" in watcher
     assert "`compozy__worktree_create`" in watcher and "timeout_seconds: 1800" in watcher
     assert "`review-<pr>-<sha12>-a<attempt>`" in watcher and "review-<pr>-<sha12>`" not in watcher  # retries get new keys
-    assert watcher.index("merge_gate") < watcher.index("exactly `ready: #<pr> <full-head-sha>`")
+    assert watcher.index(gate) < watcher.index("exactly `ready: #<pr> <full-head-sha>`")
     assert fl.frontmatter_field(watcher, "tools") is None  # an allowlist would cut its other tools
     gatekeeper = agent_text("factory-gatekeeper")
-    assert gate in gatekeeper and "`[review] repo`" in gatekeeper
+    assert gate in gatekeeper and "`[roles.review] provider`" in gatekeeper
     assert "refused #<pr>: merge_gate <reasons comma-separated>" in gatekeeper
-    assert gatekeeper.index("merge_gate") < gatekeeper.index("## Merge into the base branch")
+    assert gatekeeper.index(gate) < gatekeeper.index("## Merge into the base branch")
+    assert "ext__github_app_review__merge_gate" in skill_text("factory-review-github-app-review")
 
 
 def test_watcher_carries_one_contest_rereview_per_head():  # US-005, BR-3
     watcher = agent_text("factory-pr-watcher")
     assert "contest: #<pr> <head-sha>" in fl.frontmatter_field(watcher, "accepts")
-    assert "exactly `rereview: {review.repo}#<pr> <full-head-sha>`" in watcher and "`rereview-<pr>-<sha12>-a<attempt>`" in watcher
+    assert "exactly `rereview: {code.repo}#<pr> <full-head-sha>`" in watcher and "`rereview-<pr>-<sha12>-a<attempt>`" in watcher
     assert "contesting: #<pr> <head-sha>" in watcher.split("## Grammar")[1]
     for refusal in ("refused: contest only from the executor of #<pr>", "refused: contest #<pr> <head-sha> is not the head",
                     "refused: contest #<pr> already re-reviewed", "rereview_not_eligible"):
         assert refusal in watcher, refusal
 
 
-GATEKEEPER_TOOLS = ["compozy__*", "ext__newrelic__*",
-                    "ext__github_app_review__merge_gate", "ext__github_app_review__upsert_promotion"]
+GATEKEEPER_TOOLS = ["compozy__*", "ext__github_app_review__merge_gate", "ext__github_app_review__upsert_promotion"]
 
 
 def test_gatekeeper_tool_allowlist_and_submit_review_only_for_the_reviewer():  # Config Lifecycle: tools: grants writes
@@ -161,10 +170,12 @@ def test_gatekeeper_tool_allowlist_and_submit_review_only_for_the_reviewer():  #
 def test_gatekeeper_promotes_through_the_app_and_deploys_on_github_approval():  # US-007, BR-8, ADR-003
     text = agent_text("factory-gatekeeper")
     assert "aprovado" not in text, "approval is the operator's GitHub review, never a message"
-    assert fl.frontmatter_field(text, "accepts") == ["ready: #<pr> <head-sha>"]
-    assert '`ext__github_app_review__upsert_promotion` with `{"repo":"{review.repo}"}`' in text
-    assert '{"repo":"{review.repo}","number":<number>,"kind":"promotion"}' in text
-    assert "--merge --match-head-commit <head_sha>" in text
+    assert fl.frontmatter_field(text, "accepts") == ["ready: #<pr> <head-sha>", "continue: #<pr> <merge-sha>"]
+    assert "`code.promotion_upsert` with `key_pattern` = the `regex` of `work.key_format`" in text  # OQ-2
+    assert "`ext__github_app_review__upsert_promotion` with `{\"repo\": \"{repo}\"}`, adding `\"key_pattern\"`" in skill_text(
+        "factory-code-github")
+    assert "`review.gate` with kind `promotion`" in text
+    assert "`code.pr_merge` with head = that `head_sha` and expected base `{code.release}`" in text
     assert "`promotion_conflict`" in text and "`promotion_not_approved`" in text
     assert "gh pr create" not in text and "gh pr edit" not in text, "the app owns the promotion PR"
     assert "factory-deploy:" in text and "close by hand" in text
@@ -195,7 +206,8 @@ def test_watcher_counts_one_round_per_app_review_and_unblocks_approved_threads()
 def test_reviewer_ignores_conventions_changed_by_the_pr_it_reviews():  # review-final G-1, G-13
     text = agent_text("factory-reviewer")
     step = next(line for line in text.splitlines() if line.startswith("2. **Conventions.**"))
-    assert "`pr_context.files` contains `REVIEW.md` or `.compozy/factory/factory.toml`" in step
+    assert "`pr_context.files` contains a protected path" in step
+    assert all(f"`{path}`" in step for path in fl.PROTECTED_PATHS)
     assert "still judge it by the base rules" in step and "add a `major` finding" in step
     assert "Never read `REVIEW.md` or `factory.toml` from the worktree" in step
     assert "`pr_context.conventions`" in text, "rules come from the base branch, never the PR head"
@@ -207,8 +219,7 @@ def test_gatekeeper_handles_every_upsert_promotion_failure():  # review-final G-
     text = agent_text("factory-gatekeeper")
     assert "Cause `config_invalid`" in text and "do not retry" in text
     assert 'Any other cause (`rate_limited`' in text and '`kind: "timer"`' in text and "after 15 min" in text
-    assert "mcp__atlassian" not in text and "Atlassian MCP" not in text
-    assert "Jira goes through the `twg jira workitem ...` CLI" in text
+    assert "mcp__" not in text and "`work.train_close`" in text, "work goes through the work adapter only"
 
 
 def test_convention_change_finding_survives_contest_and_blocks():  # review-final G-15, G-17
@@ -230,25 +241,27 @@ def test_approved_unresolved_threads_rearm_a_timer_and_promotion_retries_notify_
 
 def test_e2e_001_dispatch_and_review_launch_guards():  # E2E-001 findings, 2026-11-18
     dispatcher, watcher = agent_text("factory-dispatcher"), agent_text("factory-pr-watcher")
-    fetch, create = dispatcher.index("git fetch origin {repo.base}"), dispatcher.index("compozy__worktree_create`: name = entry ID")
+    fetch, create = dispatcher.index("git fetch origin {code.base}"), dispatcher.index("compozy__worktree_create`: name = entry ID")
     assert fetch < create, "the executor branch starts from a freshly fetched base"
     assert "never `compozy__session_spawn`" in watcher, "a spawned reviewer has no workspace paths and is refused"
-    assert "`gh pr update-branch <n> --repo {repo.github}` yourself (no executor round; once per head)" in watcher
+    assert "run `code.pr_update_branch` yourself (no executor round; once per head)" in watcher
 
 
 def test_gatekeeper_follows_the_deploy_through_github_deployments():  # E2E-003, 2026-11-18
     text = agent_text("factory-gatekeeper")
     step = text[text.index("3. **Follow the deploy"):text.index("4. Deploy ok.")]
-    assert "deployments?sha=<merge-sha>&environment=<env>" in step
+    assert "`deploy.wait` for the merge commit in environment `{deploy.environment}`" in step
     assert "Never query the deploy platform itself" in step
-    assert "aws " not in step and "codepipeline" not in step.lower(), "the deploy is read from GitHub only"
-    for outcome in ("`success`", "`failure` or `error`", "no Deployment for the merge commit after 15 min"):
+    assert "aws " not in step and "codepipeline" not in step.lower(), "the deploy is read from the deploy role only"
+    for outcome in ("`success`", "`failure` or `error`", "`absent`"):
         assert outcome in step
+    adapter = skill_text("factory-deploy-github-deployments")
+    assert "deployments?sha=<merge-sha>&environment=<env>" in adapter and "no Deployment exists\nafter 15 min" in adapter
 
 
 def test_jira_fields_are_issue_facts_and_foreign_cards_are_left_to_the_operator():  # Q6 = a, Q7 = a, 2026-11-18
     scribe, gatekeeper = agent_text("factory-scribe"), agent_text("factory-gatekeeper")
-    row = next(line for line in scribe.splitlines() if line.startswith("| `documentacao_anexa` |"))
+    row = next(line for line in scribe.splitlines() if line.lstrip().startswith("- `attached_doc`:"))
     assert "A fact of the issue, not of its delivery" in row and "evidence in the body" in row
     assert "README" not in gatekeeper, "attached documentation is never derived from the PR diff"
     step = gatekeeper[gatekeeper.index("4. Deploy ok."):gatekeeper.index("5. Deploy failed")]

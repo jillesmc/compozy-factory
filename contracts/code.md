@@ -19,7 +19,7 @@ deployment = the code merge SHA (BR-17). Promotion PR creation and identity belo
 | code.issue_close | issue, reason (completed/not_planned), comment | — | not_found |
 | code.issue_labels | issue, add[], remove[] | labels[] after the change | not_found |
 | code.issue_link_child | parent issue, child issue | — (native sub-issue) | not_found, link_unsupported |
-| code.pr_get | pr | {state (open/closed/merged), draft, base, head_sha, head_branch, title, body, commits[{sha, message}], files[], mergeable (mergeable/conflicting/unknown), merge_state (clean/behind/blocked/…), checks[{name, state, url}], merge_commit?} | not_found |
+| code.pr_get | pr | {state (open/closed/merged), draft, base, head_sha, head_branch, title, body, commits[{sha, message}], files[], changed_files (the PR's total count; `files` may be shorter), mergeable (mergeable/conflicting/unknown), merge_state (clean/behind/blocked/…), checks[{name, state, url}], merge_commit?} | not_found |
 | code.pr_threads | pr | unresolved review threads [{id, path, line, author, url}], all pages | not_found |
 | code.pr_update_branch | pr | new head sha | conflict, not_found |
 | code.pr_merge | pr, head (full sha), expected_base | merge commit sha; merge commit only, pinned to head, after `factory_guard.py premerge` (BR-20) | head_moved, base_changed, not_mergeable |

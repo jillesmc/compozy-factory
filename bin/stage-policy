@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+"""Stage the github-app-review policy working copy as an approved-version candidate (F1, BR-15).
+
+Usage: bin/stage-policy
+
+Reads the working copy (GITHUB_APP_POLICY_FILE, which must be absolute; else
+$XDG_CONFIG_HOME/compozy-github-app/policy.toml when XDG_CONFIG_HOME is absolute; else
+~/.config/compozy-github-app/policy.toml), checks it against the extension's strict TOML subset and
+schema (compozy-github-app docs/policy.md), and writes its byte copy policies/<sha256>.toml next to it
+(directory 0700, file 0444, never overwritten). No extension, CompozyOS or network call: it works while
+the released extension still predates policy files. It activates nothing; it prints the `secrets set`
+line the operator runs to switch GITHUB_APP_POLICY_DIGEST.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import factorylib as fl  # noqa: E402
+
+
+def main():
+    if len(sys.argv) > 1:
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    try:
+        status, digest, path = fl.stage_policy()
+    except ValueError as exc:
+        fl.refuse(str(exc))
+    note = " (byte copy of the working copy; schema checked)" if status == "staged" else ""
+    print(f"{status:<10} policies/{path.name}{note}")
+    print(f"activate   {fl.activate_line(digest)}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -8,7 +8,7 @@ from conftest import run
 
 AGENTS = fl.AGENTS + fl.ON_DEMAND  # install copies every factory-* dir, on-demand ones included
 ADAPTERS = sorted(f"{r}-{p}" for r, p in fl.bundled_adapters())
-TOOLS = "factory_envelope.py, factory_guard.py, factory_intake.py"
+TOOLS = "factory_envelope.py, factory_external.py, factory_guard.py, factory_intake.py"
 
 
 def snapshot(root):
@@ -56,7 +56,7 @@ def test_ut_004_changed_authority_block_prints_authority_approval(repo, home, ho
     run("install", env=home_env, repo_root=repo)
     heartbeat = repo / "agents" / "factory-auditor" / "HEARTBEAT.md"
     old = fl.authority_digest(heartbeat.read_text())
-    heartbeat.write_text(heartbeat.read_text().replace('title: "Audit the fix in New Relic"', 'title: "Audit the fix"'))
+    heartbeat.write_text(heartbeat.read_text().replace('title: "Audit the fix in production"', 'title: "Audit the fix"'))
     new = fl.authority_digest(heartbeat.read_text())
     assert new and new != old
     proc = run("install", env=home_env, repo_root=repo)

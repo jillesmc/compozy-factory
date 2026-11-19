@@ -86,7 +86,7 @@ promotion `key_pattern` is the `regex` (the App's Jira default).
 
 ## work.train_close
 
-Per item `{key, facts}` after a successful deploy: a factory item (its PR closes an issue labeled
+Idempotent per item (a train or a resumed continuation may close the same item twice, R2-1): read `work.state` first and skip the Done transition (and the repair) when it is already `done`; read the item's comments and skip the comment when one already carries this deploy's link. Per item `{key, facts}` after a successful deploy: a factory item (its PR closes an issue labeled
 `factory`) gets `work.fields_repair`, `work.transition` `done` and a `work.comment` with the PR and
-deploy links → `done`. Any other item gets only the comment and is reported `left_to_operator`
+deploy links → `done` (comments read with `twg jira workitem get <KEY> --fields comment`). Any other item gets only the comment and is reported `left_to_operator`
 (change neither its fields nor its status). A failure on one item is `failed` with the reason; go on.

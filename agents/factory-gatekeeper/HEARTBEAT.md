@@ -14,4 +14,4 @@ context:
 
 # Check-in
 
-If there is an open promotion PR (base branch → release branch of `factory.toml` `[repo]`) with green checks waiting for approval for more than 6 hours, propose reminding the operator. If a deploy monitor fired without its result being handled, propose handling it. Otherwise, nothing to do.
+If there is an open promotion PR (`base` → `release` of `factory.toml` `[roles.code.<provider>]`) with green checks waiting for approval for more than 6 hours, propose reminding the operator. If a deploy monitor fired without its result being handled, propose handling it. If a continuation pointer is still `running` with no armed promotion or deploy monitor, no promotion in flight and no train in Deploy, propose resuming it (AGENT.md, Recovery). Otherwise, nothing to do.

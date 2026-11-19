@@ -6,7 +6,6 @@ test_install.py and test_attach.py belong to the earlier factory-user-agents spe
 import hashlib
 import json
 import os
-import pty
 import re
 import shutil
 import subprocess
@@ -15,7 +14,7 @@ import sys
 import pytest
 
 import factorylib as fl
-from conftest import NO_COMPOZY, REPO, run
+from conftest import NO_COMPOZY, REPO, run, run_tty
 
 sys.path.insert(0, str(REPO / "tools"))
 import factory_envelope as fe  # noqa: E402
@@ -58,20 +57,6 @@ def guard(*args, env):
     full["PATH"] = f"{NO_COMPOZY}{os.pathsep}{full['PATH']}"
     full.update(env)
     return subprocess.run([sys.executable, str(GUARD), *args], capture_output=True, text=True, env=full)
-
-
-def run_tty(script, *args, env, answer="y\n", repo_root=REPO):
-    """Run a bin/ script with a pseudo-terminal as stdin (an operator at the keyboard)."""
-    full = {k: v for k, v in os.environ.items() if not k.startswith("COMPOZY_")}
-    full.update(env)
-    master, slave = pty.openpty()
-    proc = subprocess.Popen([str(repo_root / "bin" / script), *args], stdin=slave, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, env=full)
-    os.close(slave)
-    os.write(master, answer.encode())
-    out, err = proc.communicate(timeout=60)
-    os.close(master)
-    return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
 
 
 def make_adapter(path, role, provider, schema=None, files=None, requires_roles=None):
@@ -194,12 +179,17 @@ def test_fr_work_github_adapter_validates(workspace):
 
 # ---------------------------------------------------------------- UT-007, UT-008, UT-049: contracts and adapters
 
-@pytest.mark.xfail(strict=True, reason="S4 rewrites the seven AGENT.md onto operations; remove this marker then")
 def test_fr_ut_007_agents_name_no_provider_tool():
-    allow = set((REPO / "tests" / "provider-words-allowlist.txt").read_text().split())
-    hits = [f"{p.parent.name}: {w}" for p in sorted((REPO / "agents").glob("*/AGENT.md"))
-            for w in ("jira", "atlassian", "twg", "nrql", "newrelic", "customfield")
-            if w in p.read_text().lower() and f"{p.parent.name}:{w}" not in allow]
+    allow = {line.strip() for line in (REPO / "tests" / "provider-words-allowlist.txt").read_text().splitlines()
+             if line.strip() and not line.startswith("#")}
+    assert allow == set(), "S4 needs no exception"
+    hits = []
+    for p in sorted((REPO / "agents").glob("*/AGENT.md")):
+        text = p.read_text()
+        for path in fl.PROTECTED_PATHS:  # a protected path (`.compozy/newrelic.toml`) is a factory reference
+            text = text.replace(f"`{path}`", "")
+        hits += [f"{p.parent.name}: {w}" for w in ("jira", "atlassian", "twg", "nrql", "newrelic", "customfield")
+                 if w in text.lower() and f"{p.parent.name}:{w}" not in allow]
     assert hits == []
 
 
@@ -441,11 +431,21 @@ def test_fr_ut_058_envelope_round_trips_through_the_issue_body_and_routes_verify
     assert (proc.returncode, proc.stdout.strip()) == (0, "factory-signals-newrelic")
 
 
-def test_fr_ut_059_newrelic_fingerprint_equals_todays():
+def legacy_fingerprint(app, f):
+    """factory_intake.fingerprint(app, f) as shipped before the envelope (frozen here: existing issues carry it)."""
+    key = "|".join(s.strip().lower() for s in (app, f["error_class"], f["transaction"]))
+    return hashlib.sha256(key.encode()).hexdigest()[:12]
+
+
+def test_fr_ut_059_newrelic_fingerprint_equals_todays(tmp_path, monkeypatch):
     finding = {"error_class": "acme.exceptions:ValidationException",
                "transaction": "WebTransaction/Function/acme_api.routes:view"}
     for app in ("acme-api-prod", " Acme-Api-Prod "):
-        assert fe.envelope(nr_fields(app))["fingerprint"] == fi.fingerprint(app, finding)
+        assert fe.envelope(nr_fields(app))["fingerprint"] == legacy_fingerprint(app, finding)
+    calls = []  # and factory_intake dedupes on that same fingerprint
+    monkeypatch.setattr(fi, "gh", lambda *a, stdin=None: (calls.append(a), "[]")[1])
+    monkeypatch.setattr(fi, "TASKS", tmp_path / "tasks")
+    assert fi.check(fe.envelope(nr_fields()))["fingerprint"] == legacy_fingerprint("acme-api-prod", finding)
 
 
 def test_fr_ut_060_jira_fields_come_from_facts_only():
@@ -473,7 +473,6 @@ def test_fr_ut_045_protected_paths_list():
                                   ".compozy/profiles/*/skills/**"]
 
 
-@pytest.mark.xfail(strict=True, reason="S4 makes the reviewer and pr-watcher cite PROTECTED_PATHS; remove this marker then")
 def test_fr_ut_045_reviewer_and_watcher_cite_every_protected_path():
     for name in ("factory-reviewer", "factory-pr-watcher"):
         text = (REPO / "agents" / name / "AGENT.md").read_text()
@@ -738,3 +737,410 @@ def test_fr_f7_repair_fails_closed_on_an_unrecognized_read(workspace):
     with pytest.raises(jira_fields.WorkUnavailable, match="customfield_10004"):
         jira_fields.fields(jira, facts, current=partial)
     assert jira_fields.fields(jira, facts, current=populated) == {}
+
+
+# ---------------------------------------------------------------- S4: UT-063, UT-066 merged_external phases (BR-18)
+
+EXT = REPO / "tools" / "factory_external.py"
+MSHA = "ab12cd34" + "0" * 32
+PR_GET = {"state": "merged", "base": "develop", "merge_commit": MSHA}
+ENTRY = "- [~] wl-20261119-01 | 2026-11-19T10:00:00Z | #194 ACME-1 Fix | session: sess-exec | worktree: wl-20261119-01 | pr: #231"
+
+
+def ext(ws, *args):
+    proc = subprocess.run([sys.executable, str(EXT), *args], cwd=ws, capture_output=True, text=True)
+    return proc.returncode, proc.stdout.strip()
+
+
+def work_log(ws, text=None):
+    path = ws / ".compozy" / "work-log.md"
+    if text is not None:
+        path.write_text(text)
+    return path.read_text()
+
+
+def merged_external(ws, sha=MSHA[:10], sender="operator", pr_get=PR_GET):
+    return ext(ws, "merged_external", "231", sha, "--from", sender, "--pr-get", json.dumps(pr_get))
+
+
+def test_fr_ut_063_merged_external_refusals_and_repeat_after_completion(workspace):
+    other = "- [ ] wl-20261119-02 | 2026-11-19T11:00:00Z | #195 ACME-2 Other | source: label"
+    work_log(workspace, f"{ENTRY}\n{other}\n")
+    before = work_log(workspace)
+    assert merged_external(workspace, sender="sess-abc") == (1, "refused: merged_external is operator-only")
+    assert merged_external(workspace, pr_get={**PR_GET, "state": "open", "merge_commit": None}) == (
+        1, "refused: #231 not merged into develop")
+    assert merged_external(workspace, pr_get={**PR_GET, "base": "main"}) == (1, "refused: #231 not merged into develop")
+    assert merged_external(workspace, sha="ffffffff") == (1, f"refused: #231 merge sha ffffffff ≠ {MSHA}")
+    assert ext(workspace, "continuing", "231", MSHA, "--from", "factory-gatekeeper") == (
+        1, "refused: #231 has no external merge in progress")
+    assert work_log(workspace) == before, "a refusal writes nothing"
+    assert merged_external(workspace) == (0, "cleanup: #231 session sess-exec worktree wl-20261119-01")
+    assert ext(workspace, "cleaned", "231", MSHA) == (0, f"send: continue: #231 {MSHA} key continue-231-{MSHA[:12]}-r1")
+    assert ext(workspace, "continuing", "231", MSHA, "--from", "factory-scribe") == (
+        1, "refused: continuing is accepted only from factory-gatekeeper")
+    assert ext(workspace, "continuing", "231", MSHA, "--from", "factory-gatekeeper") == (0, "wait: #231 post_merge_done")
+    assert ext(workspace, "post_merge_done", "231", MSHA, "--from", "factory-gatekeeper") == (
+        0, f"done: #231 {MSHA} post_merge_done")
+    done = work_log(workspace)
+    assert done.splitlines()[0].startswith("- [x] wl-20261119-01") and f"external: post_merge_done {MSHA}" in done
+    assert "evidence: merge ab12cd340000 (external)" in done and done.splitlines()[1] == other
+    assert merged_external(workspace) == (0, f"done: #231 {MSHA} post_merge_done"), "no second cleanup, no continue:"
+    assert ext(workspace, "retry", "231", MSHA) == (0, f"done: #231 {MSHA} post_merge_done")
+    assert work_log(workspace) == done
+    assert merged_external(workspace, sha="ffffffff")[1] == f"refused: #231 merge sha ffffffff ≠ {MSHA}"
+
+
+class Crash(Exception):
+    pass
+
+
+class Loop:
+    """The dispatcher acting on factory_external.py lines and a gatekeeper following its AGENT.md continue path
+    (pointer `running` → idempotent steps → `done`; Recovery resumes a `running` pointer on every turn), with
+    injected crashes. Scenario B: the continuation promotes and deploys. Scenario A (`deployed_before`): an
+    earlier train already promoted and deployed the merge, so the upsert has nothing to promote."""
+
+    STEPS = ("closure", "marker")  # guarded in the gatekeeper's own text ("still open", "unless … has it")
+
+    def __init__(self, ws, fault, deployed_before=False, guarded=True):
+        self.ws, self.fault, self.deployed_before, self.guarded = ws, fault, deployed_before, guarded
+        self.cleanups = self.starts = 0
+        self.pointer = None  # the gatekeeper's `#231 continue <sha> running|stuck|done`
+        self.applied = set(self.STEPS) if deployed_before else set()  # provider effects already present
+        self.effects = {}  # effect -> times it really changed provider state
+        # work.train_close as the adapter does it: a transition and a comment, each guarded only when the
+        # adapter section says so (work.state first, comment only when absent). An earlier train did both in A.
+        self.item_done, self.comments = deployed_before, int(deployed_before)
+        self.transitions = int(deployed_before)
+        self.deploying = False  # Deploy phase: the deploy.wait terminal monitor is armed
+        self.sent_in = []  # the phase recorded when each continue: was sent
+        self.pending_done = False  # the gatekeeper owes post_merge_done (resent until acknowledged)
+
+    def crash(self, point):
+        if self.fault == point:
+            self.fault = None
+            raise Crash(point)
+
+    def phase(self):
+        return re.search(r"external: (\w+)", work_log(self.ws)).group(1)
+
+    def effect(self, name):  # each step checks before acting
+        if name not in self.applied:
+            self.applied.add(name)
+            self.effects[name] = self.effects.get(name, 0) + 1
+
+    def gatekeeper(self):
+        """`continue:` delivered: re-ack or re-report on a pointer, else record `running` first, then ack."""
+        if self.pointer == "done":
+            return "post_merge_done"
+        if self.pointer is None:
+            self.pointer = "running"
+            self.starts += 1
+        return "continuing"
+
+    def train_close(self):
+        if not (self.guarded and self.item_done):
+            self.transitions += 1
+            self.item_done = True
+        self.crash("inside train_close")
+        if not (self.guarded and self.comments):
+            self.comments += 1
+
+    def gatekeeper_turn(self, recovery=True):
+        """A gatekeeper turn: the deploy monitor's wake finishes a train in Deploy; otherwise Recovery resumes a
+        `running` pointer from step 4 when nothing is in flight (no promotion or deploy monitor, no Deploy)."""
+        if self.deploying:  # the deploy.wait wake: Deploy step 4 for the train that includes #231
+            self.deploying = False
+            self.post_deploy()
+        elif self.pointer == "running" and recovery:
+            if self.deployed_before:
+                assert "promotion" not in self.applied  # nothing to promote; the merge sha is in the release
+                self.crash("gatekeeper between running and done")
+                self.post_deploy()  # contained: Deploy step 4 for #231 alone
+            else:
+                self.effect("promotion")
+                self.deploying = True  # approved, merged, deploy.wait armed: the next wake follows it
+                self.crash("gatekeeper between running and done")
+        if self.pending_done:
+            self.crash("after continuing before post_merge_done")
+            self.pending_done = False
+            self.act(ext(self.ws, "post_merge_done", "231", MSHA, "--from", "factory-gatekeeper")[1])
+
+    def post_deploy(self):
+        self.train_close()
+        for step in self.STEPS:
+            self.effect(step)
+        self.pointer, self.pending_done = "done", True
+        if self.pending_done:
+            self.crash("after continuing before post_merge_done")
+            self.pending_done = False
+            self.act(ext(self.ws, "post_merge_done", "231", MSHA, "--from", "factory-gatekeeper")[1])
+
+    def act(self, line):
+        while True:
+            if line.startswith("cleanup:"):
+                self.cleanups += 1
+                line = ext(self.ws, "cleaned", "231", MSHA)[1]
+            elif line.startswith("send: continue:"):
+                self.crash("after recording before sending continue")
+                self.sent_in.append(self.phase())
+                reply = self.gatekeeper()
+                self.crash("after sending before continuing")
+                line = ext(self.ws, reply, "231", MSHA, "--from", "factory-gatekeeper")[1]
+            else:
+                return line
+
+    def merged_external(self):
+        self.crash("after verification before recording")  # code.pr_get done, the script never ran
+        return self.act(merged_external(self.ws)[1])
+
+    def run(self):
+        """Operator message, then 15-min timer wakes and operator re-sends; the gatekeeper takes a turn each time."""
+        for attempt in range(10):
+            try:
+                if attempt == 0 or attempt % 2:
+                    self.merged_external()
+                else:
+                    self.act(ext(self.ws, "retry", "231", MSHA)[1])
+            except Crash:
+                pass
+            try:
+                self.gatekeeper_turn()
+            except Crash:
+                pass
+            if "external: post_merge_done" in work_log(self.ws):
+                return
+        raise AssertionError("did not converge")
+
+
+TRAIN_GUARD = "read `work.state` first and skip the Done transition"
+
+
+def adapter_text(provider):
+    return (REPO / "skills" / f"factory-work-{provider}" / "SKILL.md").read_text().split("## work.train_close")[1]
+
+
+def test_fr_r2_1_unguarded_train_close_would_repeat_on_a_resume(workspace):
+    """The model is not idempotent by assumption: without the adapter guard, scenario A closes and comments twice."""
+    work_log(workspace, ENTRY + "\n")
+    loop = Loop(workspace, None, deployed_before=True, guarded=False)
+    loop.run()
+    assert (loop.transitions, loop.comments) == (2, 2)
+
+
+FAULTS = [None, "after verification before recording", "after recording before sending continue",
+          "after sending before continuing", "gatekeeper between running and done",
+          "inside train_close", "after continuing before post_merge_done"]
+
+
+@pytest.mark.parametrize("deployed_before", [False, True], ids=["B-promotes", "A-nothing-to-promote"])
+@pytest.mark.parametrize("fault", FAULTS)
+def test_fr_ut_066_every_crash_point_converges_with_one_cleanup_and_one_continuation(workspace, fault, deployed_before):
+    work_log(workspace, ENTRY + "\n")
+    jira, github = (adapter_text(p) for p in ("jira", "github"))
+    loop = Loop(workspace, fault, deployed_before, guarded=TRAIN_GUARD in jira and TRAIN_GUARD in github)
+    loop.run()
+    assert loop.fault is None, "the fault was injected"
+    assert (loop.cleanups, loop.starts) == (1, 1), "one cleanup, one continuation"
+    want = {} if deployed_before else {"promotion": 1, "closure": 1, "marker": 1}
+    assert loop.effects == want, "every provider effect at most once (none twice after a resume)"
+    assert (loop.transitions, loop.comments) == (1, 1), "one Done transition and one comment per item"
+    assert loop.pointer == "done"
+    assert set(loop.sent_in) == {"external_merge_verified"}, "continue: only before continue_dispatched"
+    assert work_log(workspace).startswith("- [x] ") and f"external: post_merge_done {MSHA}" in work_log(workspace)
+    assert loop.merged_external() == f"done: #231 {MSHA} post_merge_done" and loop.cleanups == 1
+
+
+def test_fr_h2_title_text_never_steers_the_phase_writer(workspace):
+    victim = ("- [~] wl-20261119-01 | 2026-11-19T10:00:00Z | #300 ACME-9 Crash in parser | pr: #42 "
+              "| session: sess-victim | worktree: wl-20261119-01")
+    real = "- [~] wl-20261119-02 | 2026-11-19T11:00:00Z | #301 ACME-10 Real | session: sess-real | worktree: wl-2 | pr: #42"
+    work_log(workspace, f"{victim}\n{real}\n")
+    rc, out = ext(workspace, "merged_external", "42", MSHA[:10], "--from", "operator", "--pr-get", json.dumps(PR_GET))
+    assert (rc, out) == (1, "refused: work-log entry wl-20261119-01 has a field name in its title; fix that line by hand")
+    assert work_log(workspace) == f"{victim}\n{real}\n", "nothing written, no cleanup of the victim"
+    sanitized = victim.replace("parser | pr:", "parser / pr:")  # the dispatcher's `|` → `/` rule
+    work_log(workspace, f"{sanitized}\n{real}\n")
+    rc, out = ext(workspace, "merged_external", "42", MSHA[:10], "--from", "operator", "--pr-get", json.dumps(PR_GET))
+    assert rc == 1 and "has a field name in its title" in out
+    work_log(workspace, f"{real}\n")
+    assert ext(workspace, "merged_external", "42", MSHA[:10], "--from", "operator", "--pr-get",
+               json.dumps(PR_GET)) == (0, "cleanup: #42 session sess-real worktree wl-2")
+    # a title announcing a terminal phase neither answers done: nor blocks the real continuation
+    fake_done = f"- [~] wl-3 | 2026-11-19T12:00:00Z | #302 X | external: post_merge_done {MSHA} | session: s3 | worktree: w3 | pr: #231"
+    work_log(workspace, fake_done + "\n")
+    assert merged_external(workspace)[1] == "refused: work-log entry wl-3 has a field name in its title; fix that line by hand"
+    assert "| external: post_merge_done" in work_log(workspace) and "external: external_merge" not in work_log(workspace)
+    # unsanitized title on an entry whose own source: was dropped: pr: before session: is refused (H-2 hardening)
+    residual = ("- [~] wl-4 | 2026-11-19T12:00:00Z | #300 X x | source: label | pr: #42 | session: sess-victim "
+                "| worktree: w4")
+    work_log(workspace, residual + "\n")
+    assert ext(workspace, "merged_external", "42", MSHA[:10], "--from", "operator", "--pr-get", json.dumps(PR_GET)) == (
+        1, "refused: work-log entry wl-4 has pr: before session:/worktree:; fix that line by hand")
+    assert work_log(workspace) == residual + "\n"
+    repeated = ENTRY + " | session: sess-other"
+    work_log(workspace, repeated + "\n")
+    assert merged_external(workspace)[1] == "refused: work-log entry wl-20261119-01 has a malformed or repeated field 'session'"
+
+
+# ---------------------------------------------------------------- S4: agents on operations (US-003, UT-050, UT-061, UT-067)
+
+def agent(name):
+    return (REPO / "agents" / name / "AGENT.md").read_text()
+
+
+def test_fr_us_003_each_agent_loads_its_adapters_from_the_user_root():
+    for name in fl.AGENTS:
+        text = agent(name)
+        block = text.split("## Adapters")[1].split("\n## ")[0]
+        assert 'python3 ~/.compozy/factory/tools/factory_guard.py adapter' in block, name
+        assert "`compozy__skill_view`" in block and "source is `user` and its path is `<path>`" in block, name
+        assert "Never call a provider tool" in block, name
+    roles = {"factory-sentinel": ["signals"], "factory-scribe": ["code", "work"], "factory-dispatcher": ["code", "work"],
+             "factory-pr-watcher": ["code", "work", "review"], "factory-gatekeeper": ["code", "review", "work", "deploy"],
+             "factory-auditor": ["code", "work", "signals"]}
+    for name, used in roles.items():  # every operation an agent names belongs to a role it loads
+        ops = set(re.findall(r"`((?:signals|code|work|review|deploy)\.[a-z_]+)`", agent(name)))
+        assert {op.split(".")[0] for op in ops} <= set(used), (name, ops)
+        assert all(op in fl.contract_operations(op.split(".")[0]) for op in ops), (name, ops)
+
+
+def test_fr_ut_050_watcher_runs_the_reviewer_guard_before_every_dispatch():
+    watcher = agent("factory-pr-watcher")
+    assert "{review.agent}" not in watcher and "`agent: factory-reviewer`" in watcher
+    dispatch = watcher.split("2. Otherwise dispatch")[1].split("   3. On the reviewer wake")[0]
+    guard_at = dispatch.index('`python3 ~/.compozy/factory/tools/factory_guard.py reviewer "$PWD"` must print `ok:`')
+    assert guard_at < dispatch.index("`compozy__session_create` with `agent: factory-reviewer`")
+    assert "before every `review` and `rereview` dispatch" in dispatch and "On `refused:` dispatch nothing" in dispatch
+    assert "Then run the reviewer guard and dispatch exactly as step 5.2" in watcher.split("## Contest")[1]
+    for name in fl.AGENTS + fl.ON_DEMAND:
+        assert "{review.agent}" not in agent(name) and "[review]" not in agent(name), name
+
+
+def test_fr_ut_061_protected_prs_block_and_resume_through_merged_external():
+    gatekeeper, watcher, dispatcher = agent("factory-gatekeeper"), agent("factory-pr-watcher"), agent("factory-dispatcher")
+    verify = gatekeeper.split("## Verify (`ready:`)")[1].split("## Merge into the base branch")[0]
+    assert "refused #<pr>: convention change needs operator" in verify
+    assert verify.index("**Protected paths.**") < verify.index("**Merge gate.**")
+    assert all(f"`{p}`" in gatekeeper.split("## Authorization")[1].split("## Input")[0] for p in fl.PROTECTED_PATHS)
+    assert "continue: #<pr> <merge-sha>" in fl.frontmatter_field(gatekeeper, "accepts")
+    cont = gatekeeper.split("## Continue after an external merge")[1].split("\n## ")[0]
+    assert "comes only from the factory-dispatcher" in cont and "refused: continue only from the factory-dispatcher" in cont
+    wake = watcher.split("   3. On the reviewer wake")[1].split("   4. **Settle**")[0]
+    assert "send `blocked: #<pr> convention change needs operator` to `agent: factory-dispatcher`" in wake
+    assert "stop watching the PR" in wake and "Never for a PR whose files match a protected path" in watcher
+    assert "merged_external: #<pr> <merge-sha> (operator input only)" in fl.frontmatter_field(dispatcher, "accepts")
+    assert "`refused: merged_external is operator-only`" in dispatcher
+    assert "python3 ~/.compozy/factory/tools/factory_external.py merged_external" in dispatcher
+    for line in ("refused: #<pr> not merged into <base>", "refused: #<pr> merge sha <given> ≠ <actual>"):
+        assert line in dispatcher
+
+
+def test_fr_ut_067_gatekeeper_continue_is_idempotent():
+    cont = agent("factory-gatekeeper").split("## Continue after an external merge")[1].split("\n## ")[0]
+    assert "1. Pointer `done`: answer `post_merge_done: #<pr> <merge-sha>` again; nothing else." in cont
+    assert "2. Pointer `running` or `stuck`: answer `continuing: #<pr> <merge-sha>` again; nothing else" in cont
+    # H-1: a continuation always ends — nothing to promote but already released, or the operator is told
+    nothing = cont.split("**Nothing to promote**")[1].split("\n5. ")[0]
+    assert "git merge-base --is-ancestor <merge-sha> origin/{code.release}" in nothing
+    assert "run Deploy step 4 for `#<pr>` alone" in nothing and "then step 5" in nothing
+    assert "warn the operator with `compozy__notify`" in nothing and "set the pointer `stuck`" in nothing
+    recovery = cont.split("**Recovery.**")[1]
+    assert "Whenever you start a turn" in recovery and "pointers at `running`" in recovery
+    assert ("no armed promotion `pull_request` monitor, no armed `deploy.wait` terminal monitor, no promotion "
+            "in flight") in recovery and "no train in the **Deploy** phase" in recovery
+    assert "resume it from step 4" in recovery
+    assert "resuming it (AGENT.md, Recovery)" in (REPO / "agents" / "factory-gatekeeper" / "HEARTBEAT.md").read_text()
+    assert "Record the pointer `running` **first**, then answer `continuing: #<pr> <merge-sha>`" in cont
+    for step in ("never upserts twice for the same head", "never transitions an item already Done",
+                 "never closes a closed issue", "never posts a second marker"):
+        assert step in cont
+    assert "set the pointer `done` and send `post_merge_done: #<pr> <merge-sha>`" in cont
+    grammar = agent("factory-gatekeeper").split("## Grammar")[1]
+    assert "continuing: #<pr> <merge-sha>" in grammar and "post_merge_done: #<pr> <merge-sha>" in grammar
+
+
+def test_fr_gatekeeper_merges_only_after_the_premerge_reread_and_passes_key_pattern():  # BR-20, OQ-2
+    gatekeeper = agent("factory-gatekeeper")
+    assert "factory_guard.py premerge {code.repo} <pr> {code.base} <full-sha>" in gatekeeper
+    merge = (REPO / "skills" / "factory-code-github" / "SKILL.md").read_text().split("## code.pr_merge")[1]
+    assert merge.index("factory_guard.py premerge") < merge.index("gh pr merge")
+    assert "`code.promotion_upsert` with `key_pattern` = the `regex` of `work.key_format`" in gatekeeper
+
+
+# ---------------------------------------------------------------- IT-005: base retarget between the gate and the merge
+
+STATEFUL_GH = r'''#!/usr/bin/env python3
+import json, os, sys
+state = json.load(open(os.environ["FAKE_GH_STATE"]))
+with open(os.environ["FAKE_GH_LOG"], "a") as log:
+    log.write(" ".join(sys.argv[1:]) + "\n")
+if sys.argv[1:3] == ["pr", "view"]:
+    print(json.dumps({"baseRefName": state["base"], "headRefOid": state["head"]}))
+elif sys.argv[1:3] == ["pr", "merge"]:
+    state["merged_into"] = state["base"]
+    json.dump(state, open(os.environ["FAKE_GH_STATE"], "w"))
+'''
+
+
+def test_fr_it_005_retarget_after_the_gate_refuses_the_merge(tmp_path):
+    """code.pr_merge as its adapter section runs it: the guard's re-read, then the head-pinned merge."""
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "gh").write_text(STATEFUL_GH)
+    (tmp_path / "bin" / "gh").chmod(0o755)
+    state, log = tmp_path / "pr.json", tmp_path / "gh.log"
+    env = {**os.environ, "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}",
+           "FAKE_GH_STATE": str(state), "FAKE_GH_LOG": str(log)}
+    head = "d8724ba" + "0" * 33
+    section = (REPO / "skills" / "factory-code-github" / "SKILL.md").read_text().split("## code.pr_merge")[1].split("## ")[0]
+    guard_cmd = re.search(r"`(python3 ~/.compozy/factory/tools/factory_guard.py premerge [^`]+)`", section).group(1)
+    merge_cmd = re.search(r"`(gh pr merge [^`]+)`", section).group(1)
+
+    def pr_merge(expected_base):
+        sub = {"{repo}": "acme/acme-api", "<n>": "231", "<expected_base>": expected_base, "<head>": head}
+        guard_argv, merge_argv = guard_cmd.split(), merge_cmd.split()
+        guard_argv = [sys.executable, str(GUARD)] + [sub.get(a, a) for a in guard_argv[2:]]
+        proc = subprocess.run(guard_argv, capture_output=True, text=True, env=env)
+        if proc.returncode != 0:
+            return proc.stdout.strip()
+        subprocess.run([sub.get(a, a) for a in merge_argv], check=True, env=env)
+        return "merged"
+
+    # merge_gate answered ready for base develop at `head`; then the base is retargeted before the re-read
+    state.write_text(json.dumps({"base": "main", "head": head}))
+    log.write_text("")
+    assert pr_merge("develop") == "refused: #231 base changed develop -> main"
+    assert not [line for line in log.read_text().splitlines() if line.startswith("pr merge")], "nothing merged"
+    state.write_text(json.dumps({"base": "develop", "head": head}))
+    assert pr_merge("develop") == "merged"
+    merges = [line for line in log.read_text().splitlines() if line.startswith("pr merge")]
+    assert merges == [f"pr merge 231 --repo acme/acme-api --merge --match-head-commit {head}"]
+    # Recorded residual (BR-20): a retarget after the re-read and before the merge call is not detected;
+    # --match-head-commit pins only the head, so the stub merges into the new base.
+    state.write_text(json.dumps({"base": "develop", "head": head}))
+    guard_ok = subprocess.run([sys.executable, str(GUARD), "premerge", "acme/acme-api", "231", "develop", head],
+                              capture_output=True, text=True, env=env)
+    assert guard_ok.returncode == 0
+    state.write_text(json.dumps({"base": "main", "head": head}))
+    subprocess.run(["gh", "pr", "merge", "231", "--repo", "acme/acme-api", "--merge", "--match-head-commit", head],
+                   check=True, env=env)
+    assert json.loads(state.read_text())["merged_into"] == "main"
+
+
+def test_fr_h3_an_incomplete_file_list_counts_as_protected():
+    contract = (REPO / "contracts" / "code.md").read_text()
+    assert "changed_files (the PR's total count; `files` may be shorter)" in contract
+    adapter = (REPO / "skills" / "factory-code-github" / "SKILL.md").read_text().split("## code.pr_get")[1].split("## ")[0]
+    assert ",commits,changedFiles," in adapter and "`changedFiles` →\n`changed_files`" in adapter
+    assert "`gh api --paginate --slurp 'repos/{repo}/pulls/<n>/files?per_page=100'`" in adapter  # R2-3: up to 3 000
+    for provider in ("jira", "github"):  # R2-1
+        assert TRAIN_GUARD in adapter_text(provider) and "skip the comment when one already carries this deploy's link" in adapter_text(provider)
+    verify = agent("factory-gatekeeper").split("## Verify (`ready:`)")[1].split("## Merge into the base branch")[0]
+    assert "the file list is complete: `files` has `changed_files` entries" in verify
+    protected = agent("factory-pr-watcher").split("## Protected paths")[1].split("\n## ")[0]
+    assert "`files` shorter than `changed_files`, or `review.context` `files_truncated` true) counts as matching" in protected
+    read = next(l for l in agent("factory-reviewer").splitlines() if l.startswith("4. **Read.**"))
+    assert "When `files_truncated` is true" in read and "add a `major` finding" in read
+    assert "replaced by `/`" in agent("factory-dispatcher").split("## Work log")[1]  # H-2, prompt side
+    assert "GitHub" not in (REPO / "agents" / "factory-dispatcher" / "HEARTBEAT.md").read_text()  # D-4

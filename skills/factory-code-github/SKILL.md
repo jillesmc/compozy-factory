@@ -84,9 +84,12 @@ endpoint is `link_unsupported`.
 
 ## code.pr_get
 
-`gh pr view <n> --repo {repo} --json state,isDraft,baseRefName,headRefOid,headRefName,title,body,commits,files,mergeable,mergeStateStatus,statusCheckRollup,mergeCommit`.
+`gh pr view <n> --repo {repo} --json state,isDraft,baseRefName,headRefOid,headRefName,title,body,commits,changedFiles,mergeable,mergeStateStatus,statusCheckRollup,mergeCommit`,
+and the files with `gh api --paginate --slurp 'repos/{repo}/pulls/<n>/files?per_page=100'` (flattened; `filename` → path,
+with `status`), which lists up to GitHub's cap of 3 000 files (`gh pr view` stops at 100).
 Map `headRefOid` → `head_sha`, `baseRefName` → `base`, `mergeStateStatus` → `merge_state`,
-`statusCheckRollup` → `checks` (a check is ok when successful or legitimately skipped).
+`statusCheckRollup` → `checks` (a check is ok when successful or legitimately skipped), `changedFiles` →
+`changed_files` (the PR's real total: above 3 000 files, `files` is shorter and the PR counts as protected).
 
 ## code.pr_threads
 

@@ -51,5 +51,6 @@ The frontmatter `key_format`: title `#194: x`, branch `194-x`, commit scope `#19
 
 ## work.train_close
 
+Idempotent per item (a train or a resumed continuation may close the same item twice, R2-1): read `work.state` first and skip the Done transition (and the repair) when it is already `done`; read the item's comments and skip the comment when one already carries this deploy's link. Comments come from `code.issue_get` with comments.
 Per item: a factory item (its issue is labeled `factory`) is closed by the deploy step of the code
 role, so `work.transition` `done` here is the same closure; any other item is `left_to_operator`.

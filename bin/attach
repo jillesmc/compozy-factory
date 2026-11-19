@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Create one always-on instance per factory agent in a workspace.
 
-Usage: bin/attach <workspace> [--agents a,b] [--allow-unsupported-adapter]
+Usage: bin/attach <workspace> [--agents a,b] [--allow-unsupported-adapter] [--dry-run]
 
 <workspace> is a CompozyOS workspace name, ID or path. Refuses before any CompozyOS call when
 <root>/.compozy/factory/factory.toml is missing or invalid (role grammar, adapter schemas, BR-17).
@@ -12,6 +12,9 @@ factory-reviewer must pass `factory_guard.py reviewer` (BR-16). Agents come from
 factory.toml [team] agents (default: all six) unless --agents narrows them. On-demand agents
 (factory-reviewer) are never attached: they are reported `skipped <agent> (on-demand)`. An agent whose
 source script is not approved is refused with the approve command; the others still attach.
+Each new instance's main session gets one boundary prompt (workaround for compozy/compozy#1815: a main
+session without a turn is not reopened after a restart): `boundary <agent> ok`. --dry-run runs every
+check and prints `would attach <agent>` without creating or prompting anything.
 """
 import argparse
 import sys
@@ -27,6 +30,7 @@ def main():
     parser.add_argument("--agents", help="comma-separated subset of factory agents")
     parser.add_argument("--allow-unsupported-adapter", action="store_true",
                         help="attach even when an adapter has no passing conformance record")
+    parser.add_argument("--dry-run", action="store_true", help="run every check; create nothing")
     args = parser.parse_args()
 
     root = fl.workspace_root(args.workspace)
@@ -65,8 +69,12 @@ def main():
                 print(f"refused: {agent} source {script['name']} not approved; run {command}")
             refused = True
             continue
+        if args.dry_run:
+            print(f"would attach {agent}")
+            continue
         created = fl.compozy("agent", "instance", "create", agent, "--workspace", ws)
         print(f"attached {agent:<20} ({created['instance']['id']})")
+        refused |= not fl.boundary(agent, ws, created["instance"])
     sys.exit(1 if refused else 0)
 
 

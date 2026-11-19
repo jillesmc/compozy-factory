@@ -5,6 +5,7 @@ on PATH that logs every call and answers from a JSON state file.
 """
 import json
 import os
+import pty
 import shutil
 import subprocess
 import sys
@@ -51,6 +52,14 @@ if cmd == ["agent", "instance", "archive"]:
         print('{"error":"agent_instance_not_found"}', file=sys.stderr)
         sys.exit(1)
     out({})
+if args[:2] == ["session", "prompt"]:  # the boundary turn of bin/attach and bin/reload
+    if ("--message-id" in args) != ("--idempotency-key" in args):  # like the real CLI
+        print("error: cli: --message-id and --idempotency-key must be provided together", file=sys.stderr)
+        sys.exit(1)
+    if args[2] in state.get("prompt_fail", []):
+        print('{"error":"session_not_found"}', file=sys.stderr)
+        sys.exit(1)
+    out({"message_id": "msg-" + args[2]})
 if cmd == ["agent", "heartbeat", "sources"]:
     out({"scripts": state["scripts"].get(args[3], [])})
 if cmd == ["agent", "info", "factory-reviewer"]:
@@ -141,6 +150,20 @@ def run(script, *args, env=None, repo_root=REPO, stdin=None):
     full_env.update(env or {})
     return subprocess.run([str(repo_root / "bin" / script), *args], capture_output=True, text=True,
                           env=full_env, input=stdin)
+
+
+def run_tty(script, *args, env, answer="y\n", repo_root=REPO):
+    """Run a bin/ script with a pseudo-terminal as stdin (an operator at the keyboard)."""
+    full = {k: v for k, v in os.environ.items() if not k.startswith("COMPOZY_")}
+    full.update(env)
+    master, slave = pty.openpty()
+    proc = subprocess.Popen([str(repo_root / "bin" / script), *args], stdin=slave, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, env=full)
+    os.close(slave)
+    os.write(master, answer.encode())
+    out, err = proc.communicate(timeout=60)
+    os.close(master)
+    return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
 
 
 @pytest.fixture
