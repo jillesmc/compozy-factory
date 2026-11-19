@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""Write an adapter's conformance record from its walk trace and verify it (BR-11, US-010).
+
+Usage: bin/conformance-record <role> <provider> --workspace-root <path>
+
+Reads <role>-<provider>.trace.jsonl (written by bin/conformance-trace) next to where the record lives:
+conformance/ of this checkout for a bundled adapter, <adapter>/conformance/ for a custom one. Each
+operation of contracts/<role>.md takes the outcome of its latest trace line; any operation missing or
+failed refuses and writes nothing. Otherwise writes conformance/<role>-<provider>.json: adapter_digest is
+the tree digest of the installed adapter ($COMPOZY_HOME/factory/adapters/<role>-<provider>, checked
+against installed.json like the guard does); environment holds provider_site (from the workspace's
+factory.toml), the versions of the adapter's requires_extensions (`compozy extension list`) and
+factory_commit (this checkout's HEAD). Then verifies the record exactly as bin/attach does and prints
+`supported` or `unsupported (<reason>)`.
+"""
+import argparse
+import json
+import subprocess
+import sys
+import tomllib
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import factorylib as fl  # noqa: E402
+
+
+def provider_site(root, conf, role, provider):
+    """Where the walk ran: Jira site, New Relic account/app, or the GitHub repo (+ deploy environment)."""
+    sub = conf["roles"][role].get(provider) or {}
+    code = conf["roles"]["code"]
+    code_sub = code.get(code["provider"]) or {}
+    if provider == "newrelic":
+        nr = tomllib.loads((Path(root) / sub["config"]).read_text())
+        return f"newrelic account {nr.get('account_id')} app {nr.get('app')}"
+    if sub.get("site"):
+        return sub["site"]
+    repo = sub.get("repo") or code_sub.get("repo")
+    if provider == "github-deployments":
+        return f"github.com/{repo} environment {sub.get('environment') or code_sub.get('release')}"
+    return f"github.com/{repo}" if repo else None
+
+
+def outcomes(trace, role, provider):
+    """operation -> outcome of its latest trace line; raises ValueError on a malformed line."""
+    found = {}
+    for n, raw in enumerate(trace.read_text().splitlines() if trace.is_file() else [], 1):
+        if not raw.strip():
+            continue
+        try:
+            line = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{trace} line {n}: invalid JSON ({exc})")
+        if (line.get("role"), line.get("provider")) != (role, provider) or line.get("outcome") not in ("pass", "fail"):
+            raise ValueError(f"{trace} line {n}: not a {role}/{provider} line with outcome pass/fail")
+        found[line.get("operation")] = line["outcome"]
+    return found
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("role", choices=fl.ROLES)
+    parser.add_argument("provider")
+    parser.add_argument("--workspace-root", required=True, help="project the walk ran on (its factory.toml)")
+    args = parser.parse_args()
+    role, provider = args.role, args.provider
+
+    root = Path(args.workspace_root).expanduser().resolve()
+    _, conf = fl.load_factory_toml(root)
+    found = fl.adapters(root, conf)
+    if (role, provider) not in found:
+        fl.refuse(f"{role}/{provider} is not configured in {root}/.compozy/factory/factory.toml")
+    src, meta, custom = found[(role, provider)]
+    try:
+        _, installed = fl.resolve(root, role, provider, conf)
+    except fl.Refused as exc:
+        fl.refuse(str(exc))
+
+    record = fl.record_path(role, provider, src, custom)
+    trace = record.with_name(f"{role}-{provider}.trace.jsonl")
+    try:
+        seen = outcomes(trace, role, provider)
+    except ValueError as exc:
+        fl.refuse(str(exc))
+    ops = fl.contract_operations(role)
+    missing = [op for op in ops if op not in seen]
+    failed = [op for op in ops if seen.get(op) == "fail"]
+    if missing or failed:
+        fl.refuse(f"no pass record for {role}/{provider}: "
+                  + "; ".join(p for p in (missing and f"missing {', '.join(missing)}",
+                                          failed and f"failed {', '.join(failed)}") if p))
+
+    wanted = meta.get("requires_extensions") or []
+    listed = fl.compozy("extension", "list") if wanted else []
+    versions = {e.get("name"): e.get("version") for e in listed if isinstance(e, dict)}
+    absent = [name for name in wanted if not versions.get(name)]
+    if absent:
+        fl.refuse(f"extension {absent[0]} required by {role}/{provider} is not installed")
+    head = subprocess.run(["git", "-C", str(fl.REPO_ROOT), "rev-parse", "HEAD"], capture_output=True, text=True)
+    if head.returncode != 0:
+        fl.refuse(f"factory_commit unknown: {fl.REPO_ROOT} is not a git checkout")
+
+    fl.write_json(record, {
+        "role": role,
+        "provider": provider,
+        "adapter_digest": fl.tree_digest(installed),
+        "environment": {"provider_site": provider_site(root, conf, role, provider),
+                        "extensions": {name: versions[name] for name in wanted},
+                        "factory_commit": head.stdout.strip()},
+        "operations": {op: "pass" for op in ops},
+        "trace": f"conformance/{trace.name}",
+        "outcome": "pass",
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    })
+    print(f"wrote {record}")
+    ok, reason = fl.conformance(role, provider, record, installed)
+    print(f"{role}/{provider} " + ("supported" if ok else f"unsupported ({reason})"))
+    sys.exit(0 if ok else 1)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)

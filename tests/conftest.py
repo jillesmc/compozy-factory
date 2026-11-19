@@ -88,6 +88,8 @@ if args[:2] == ["skill", "info"]:
     name = args[2]
     out(state["skills"].get(name) or {"name": name, "source": "user",
                                       "path": os.path.join(os.environ["COMPOZY_HOME"], "skills", name)})
+if args[:2] == ["extension", "list"]:
+    out(state.get("extensions", []))
 if cmd == ["agent", "memory", "inspect"]:
     out({"content": state["memory"].get(args[3], ""), "digest": "digest-" + args[3]})
 if cmd == ["agent", "memory", "write"]:

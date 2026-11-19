@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""Append one operation call to a conformance trace (BR-11 walks, E2E-001 trace equivalence).
+
+Usage: bin/conformance-trace <role> <provider> <operation> --row <matrix row> --outcome pass|fail
+           --effect '<provider-side effect observed>' [--today '<today's call>']
+           [--input key=value]... [--call '<tool or argv>' '<target>']... [--dir <conformance dir>]
+
+Appends one JSON line to <dir>/<role>-<provider>.trace.jsonl (default dir: conformance/ of this
+checkout, where bundled adapters keep their record): {ts, role, provider, operation, inputs,
+provider_calls [{tool|argv, target}], outcome, effect, equivalent_to {row, call}}. The operation must be
+in contracts/<role>.md and the row must be a behavior → operation matrix row of that operation;
+equivalent_to.call defaults to the matrix's today call. Secrets never enter the trace: inputs whose name
+looks like a credential are dropped to `[redacted]`, token-shaped values are masked everywhere and any
+value is cut at 200 characters. `outcome` is whether the adapter behaved as its contract says (a
+contract error such as `not_found` on a missing issue is a pass); bin/conformance-record reads the trace.
+"""
+import argparse
+import json
+import re
+import shlex
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import factorylib as fl  # noqa: E402
+
+# Behavior → operation matrix of spec factory-roles: row -> (operation, today's call).
+MATRIX = {
+    "1": ("code.issue_list", "gh api repos/{r}/issues?state=open&labels="),
+    "2": ("code.issue_label_events", "gh api repos/{r}/issues/{n}/events"),
+    "3": ("code.issue_list", "gh api repos/{r}/issues?state=closed&labels=&since="),
+    "4": ("code.issue_get", "gh issue view --json comments"),
+    "5": ("code.issue_search", "gh api search/issues"),
+    "6": ("code.issue_list", "gh issue list --state closed --json body"),
+    "7": ("code.pr_search", "gh pr list --state all --search"),
+    "8": ("code.issue_create", "gh api POST repos/{r}/issues"),
+    "9": ("code.label_ensure", "gh label create --force"),
+    "10": ("code.issue_comment", "gh api POST repos/{r}/issues/{n}/comments"),
+    "11": ("code.issue_edit", "gh issue edit --title/--body"),
+    "12": ("code.issue_reopen", "gh issue reopen --comment"),
+    "13": ("code.issue_close", "gh issue close --comment"),
+    "14": ("code.issue_labels", "gh issue edit --add-label/--remove-label"),
+    "15": ("code.issue_link_child", "gh api POST repos/{r}/issues/{n}/sub_issues"),
+    "16": ("code.pr_get", "gh pr view --json state,baseRefName,headRefOid,statusCheckRollup,mergeable,commits"),
+    "17": ("code.pr_threads", "gh api graphql reviewThreads (all pages)"),
+    "18": ("code.pr_update_branch", "gh pr update-branch"),
+    "19": ("code.pr_merge", "gh pr merge --merge --match-head-commit"),
+    "20": ("code.pr_get", "gh pr view --json title,body"),
+    "20a": ("code.pr_get", "gh pr view --json state,mergeCommit (merged_external)"),
+    "21": ("code.promotion_upsert", "ext__github_app_review__upsert_promotion"),
+    "22": ("code.check_hygiene", "pr-watcher hygiene incl. runs-on"),
+    "23": ("signals.query_window", "ext__newrelic__nrql_query"),
+    "24": ("signals.list_new", "heartbeat sources newrelic/*"),
+    "25": ("signals.verify_gone", "auditor NRQL before/after deploy"),
+    "25a": ("signals.normalize", "factory_intake.py fingerprint(app, f)"),
+    "26": ("work.create", "mcp__atlassian__createjiraissue"),
+    "27": ("work.state", "twg jira workitem get --fields"),
+    "28": ("work.fields_repair", "twg jira workitem update --fields-json"),
+    "29": ("work.transition", "twg jira workitem transitions query / transition"),
+    "30": ("work.comment", "addoreditjiraissuecomment"),
+    "31": ("work.key_format", "key spelling in title/body/branch/commit"),
+    "32": ("work.train_close", "gatekeeper train bookkeeping"),
+    "33": ("review.context", "ext__github_app_review__pr_context"),
+    "34": ("review.submit", "ext__github_app_review__submit_review"),
+    "35": ("review.gate", "ext__github_app_review__merge_gate"),
+    "36": ("deploy.wait", "gh api repos/{r}/deployments + statuses"),
+}
+LIMIT = 200
+SECRET_NAME = re.compile(r"token|secret|passw|authori[sz]ation|api[_-]?key|credential|cookie|private", re.I)
+SECRET_VALUE = re.compile(r"gh[pousr]_\w{16,}|github_pat_\w{16,}|NRAK-\w{16,}|xox[abprs]-[\w-]{10,}"
+                          r"|eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]+|(?:bearer|token)\s+\S{12,}", re.I)
+
+
+def redact(text):
+    """Mask token-shaped values, then cut at LIMIT characters."""
+    text = SECRET_VALUE.sub("[redacted]", str(text))
+    return text if len(text) <= LIMIT else text[:LIMIT] + "…[truncated]"
+
+
+def trace_line(role, provider, operation, row, outcome, effect, today=None, inputs=(), calls=()):
+    """Validated, redacted trace line (dict); raises ValueError."""
+    if role not in fl.ROLES:
+        raise ValueError(f"unknown role {role}")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", provider):
+        raise ValueError(f"provider {provider!r} must be lowercase letters, digits and dashes")
+    if operation not in fl.contract_operations(role):
+        raise ValueError(f"{operation} is not an operation of contracts/{role}.md")
+    if MATRIX.get(row, (None,))[0] != operation:
+        rows = ", ".join(r for r, (op, _) in MATRIX.items() if op == operation)
+        raise ValueError(f"matrix row {row} is not {operation} (its rows: {rows})")
+    if outcome not in ("pass", "fail"):
+        raise ValueError("outcome must be pass or fail")
+    if not effect.strip():
+        raise ValueError("effect must describe the provider-side effect observed")
+    parsed = {}
+    for item in inputs:
+        key, sep, value = item.partition("=")
+        if not sep or not key:
+            raise ValueError(f"--input takes key=value, got {item!r}")
+        parsed[key] = "[redacted]" if SECRET_NAME.search(key) else redact(value)
+    provider_calls = []
+    for call, target in calls:
+        argv = shlex.split(call)  # a single word is a tool name (ext__…, mcp__…), else a command line
+        head = {"tool": redact(call)} if len(argv) == 1 else {"argv": [redact(a) for a in argv]}
+        provider_calls.append({**head, "target": redact(target)})
+    return {"ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "role": role, "provider": provider,
+            "operation": operation, "inputs": parsed, "provider_calls": provider_calls, "outcome": outcome,
+            "effect": redact(effect), "equivalent_to": {"row": row, "call": redact(today or MATRIX[row][1])}}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("role")
+    parser.add_argument("provider")
+    parser.add_argument("operation")
+    parser.add_argument("--row", required=True, help="behavior → operation matrix row (e.g. 8, 20a)")
+    parser.add_argument("--outcome", required=True, choices=["pass", "fail"])
+    parser.add_argument("--effect", required=True, help="provider-side effect observed, e.g. 'issue #12 labeled x'")
+    parser.add_argument("--today", help="today's call this matches (default: the matrix row's)")
+    parser.add_argument("--input", action="append", default=[], metavar="KEY=VALUE")
+    parser.add_argument("--call", action="append", default=[], nargs=2, metavar=("TOOL_OR_ARGV", "TARGET"))
+    parser.add_argument("--dir", help="conformance directory (default: conformance/ of this checkout; "
+                                      "a custom adapter's own conformance/)")
+    args = parser.parse_args()
+    if not args.dir and args.role in fl.ROLES and (args.role, args.provider) not in fl.bundled_adapters():
+        fl.refuse(f"no bundled adapter {args.role}/{args.provider}; pass --dir for a custom adapter")
+    try:
+        line = trace_line(args.role, args.provider, args.operation, args.row, args.outcome, args.effect,
+                          args.today, args.input, args.call)
+    except ValueError as exc:
+        fl.refuse(str(exc))
+    folder = Path(args.dir) if args.dir else fl.REPO_ROOT / "conformance"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{args.role}-{args.provider}.trace.jsonl"
+    with path.open("a") as trace:
+        trace.write(json.dumps(line, ensure_ascii=False) + "\n")
+    print(f"traced {args.operation} {args.outcome} -> {path}")
+
+
+if __name__ == "__main__":
+    main()
