@@ -2,7 +2,9 @@
 """Provider-neutral check-in source: runs the code adapter's `sources/<this file's name>.py`.
 
 The same bytes serve factory-dispatcher/sources/deliver and factory-auditor/sources/due, so one
-approval covers every project and code provider. The daemon runs it with the workspace root as cwd.
+approval covers every project and code provider. The daemon runs a temporary copy of it with the
+workspace root as cwd and a scrubbed environment, so $COMPOZY_HOME is `COMPOZY_HOME` when set, else
+~/.compozy (never this file's path), and must hold factory/installed.json.
 It reads `[roles.code]` from `.compozy/factory/factory.toml`, resolves the installed adapter
 (bundled: $COMPOZY_HOME/factory/adapters/code-<provider>/, checked against installed.json; custom:
 the bindings.json entry for this workspace, checked against its source tree) and only then executes
@@ -13,13 +15,15 @@ import sys
 import tomllib
 from pathlib import Path
 
-HOME = Path(__file__).resolve().parents[3]  # $COMPOZY_HOME/agents/<agent>/sources/<name>
-NAME = Path(__file__).name
+NAME = Path(__file__).name  # the daemon's temporary copy keeps the source's file name
 OLD = ("repo", "review", "ci", "deploy", "newrelic", "jira")
 
 
 def main():
-    sys.path.insert(0, str(HOME / "factory" / "tools"))
+    home = Path(os.environ.get("COMPOZY_HOME") or Path.home() / ".compozy").expanduser()
+    if not (home / "factory" / "installed.json").is_file():
+        raise RuntimeError(f"{home}/factory/installed.json missing; run bin/install (COMPOZY_HOME or ~/.compozy)")
+    sys.path.insert(0, str(home / "factory" / "tools"))
     import factory_guard as guard
 
     path = Path(".compozy/factory/factory.toml")
@@ -31,7 +35,7 @@ def main():
     provider = conf.get("roles", {}).get("code", {}).get("provider")
     if not isinstance(provider, str) or not provider:
         raise guard.Refused("factory.toml missing [roles.code] provider")
-    _, installed = guard.resolve(Path.cwd(), "code", provider, conf, HOME)
+    _, installed = guard.resolve(Path.cwd(), "code", provider, conf, home)
     script = installed / "sources" / f"{NAME}.py"
     if not script.is_file():
         raise guard.Refused(f"adapter code/{provider} has no sources/{NAME}.py")

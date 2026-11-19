@@ -383,14 +383,23 @@ def test_fr_ut_051_premerge_refuses_a_changed_base_or_head(tmp_path):
 
 # ---------------------------------------------------------------- UT-057: provider-neutral heartbeat source
 
-def test_fr_ut_057_wrapper_runs_the_installed_adapter_or_refuses(fake, workspace, repo, home, home_env):
+def test_fr_ut_057_wrapper_runs_the_installed_adapter_or_refuses(fake, workspace, repo, home, home_env, tmp_path):
     deliver = repo / "skills" / "factory-code-github" / "sources" / "deliver.py"
     deliver.write_text(STUB_DELIVER)
     assert run("install", env=home_env, repo_root=repo).returncode == 0
-    wrappers = [home / "agents" / "factory-dispatcher" / "sources" / "deliver",
-                home / "agents" / "factory-auditor" / "sources" / "due"]
-    assert wrappers[0].read_bytes() == wrappers[1].read_bytes(), "one provider-neutral script for both agents"
-    env = {**os.environ, "COMPOZY_HOME": "/nonexistent"}  # the wrapper finds its home from its own path
+    installed = [home / "agents" / "factory-dispatcher" / "sources" / "deliver",
+                 home / "agents" / "factory-auditor" / "sources" / "due"]
+    assert installed[0].read_bytes() == installed[1].read_bytes(), "one provider-neutral script for both agents"
+    wrappers = []  # the daemon runs a temporary copy, so the wrapper must not find its home from its own path
+    for src in installed:
+        copy = tmp_path / f"compozy-source-{src.name}" / src.name
+        copy.parent.mkdir()
+        shutil.copy2(src, copy)
+        wrappers.append(copy)
+    fake_home = tmp_path / "operator"  # the daemon passes HOME but not COMPOZY_HOME: ~/.compozy is the fallback
+    fake_home.mkdir()
+    (fake_home / ".compozy").symlink_to(home)
+    env = {k: v for k, v in os.environ.items() if k != "COMPOZY_HOME"} | {"HOME": str(fake_home)}
     proc = subprocess.run([str(wrappers[0])], cwd=workspace, input='{"limits": {"max_items": 5}}',
                           capture_output=True, text=True, env=env)
     assert proc.returncode == 0, proc.stderr
@@ -403,6 +412,11 @@ def test_fr_ut_057_wrapper_runs_the_installed_adapter_or_refuses(fake, workspace
     edit(workspace, 'provider = "github"\n', 'provider = "gitlab"\n')
     proc = subprocess.run([str(wrappers[1])], cwd=workspace, input="{}", capture_output=True, text=True, env=env)
     assert proc.stderr.strip() == "source_failed: adapter code/gitlab not installed; run bin/install"
+    proc = subprocess.run([str(wrappers[0])], cwd=workspace, input="{}", capture_output=True, text=True,
+                          env={**env, "COMPOZY_HOME": str(tmp_path / "empty")})
+    assert proc.returncode == 1
+    assert proc.stderr.strip() == (f"source_failed: {tmp_path / 'empty'}/factory/installed.json missing; "
+                                   "run bin/install (COMPOZY_HOME or ~/.compozy)")
 
 
 # ---------------------------------------------------------------- UT-058..UT-060: provider-neutral data
@@ -517,10 +531,12 @@ def test_fr_ut_064_install_adapter_needs_a_terminal_then_installs_and_binds(fake
     assert f"installed  binding (acme-api, code, github) → @{tree[7:19]}, skill {skill}" in proc.stdout
     # the provider-neutral wrapper now runs the bound copy; a later source change refuses until re-install
     wrapper = home / "agents" / "factory-dispatcher" / "sources" / "deliver"
-    proc = subprocess.run([str(wrapper)], cwd=workspace, input="{}", capture_output=True, text=True)
+    proc = subprocess.run([str(wrapper)], cwd=workspace, input="{}", capture_output=True, text=True,
+                          env={**os.environ, "COMPOZY_HOME": str(home)})
     assert proc.returncode == 0 and json.loads(proc.stdout)["items"][0]["key"] == "stub-1"
     (src / "sources" / "deliver.py").write_text(STUB_DELIVER + "# changed\n")
-    proc = subprocess.run([str(wrapper)], cwd=workspace, input="{}", capture_output=True, text=True)
+    proc = subprocess.run([str(wrapper)], cwd=workspace, input="{}", capture_output=True, text=True,
+                          env={**os.environ, "COMPOZY_HOME": str(home)})
     assert proc.returncode == 1 and proc.stderr.startswith("source_failed: custom adapter code/github changed (tree ")
     assert proc.stderr.rstrip().endswith("run bin/install-adapter")
 
@@ -654,13 +670,15 @@ def test_fr_f3_compiled_python_or_an_extra_file_in_the_installed_tree_is_refused
     wrapper = home / "agents" / "factory-dispatcher" / "sources" / "deliver"
     sources = home / "factory" / "adapters" / "code-github" / "sources"
     (sources / "json.pyc").write_bytes(b"\x00not digested")
-    proc = subprocess.run([str(wrapper)], cwd=workspace, input="{}", capture_output=True, text=True)
+    proc = subprocess.run([str(wrapper)], cwd=workspace, input="{}", capture_output=True, text=True,
+                          env={**os.environ, "COMPOZY_HOME": str(home)})
     assert proc.returncode == 1 and "contains compiled Python (sources/json.pyc)" in proc.stderr
     (sources / "json.pyc").unlink()
     for extra in (sources / "helper.py", sources.parent / "conformance" / "notes.md"):
         extra.parent.mkdir(exist_ok=True)
         extra.write_text("x = 1\n")
-        proc = subprocess.run([str(wrapper)], cwd=workspace, input="{}", capture_output=True, text=True)
+        proc = subprocess.run([str(wrapper)], cwd=workspace, input="{}", capture_output=True, text=True,
+                              env={**os.environ, "COMPOZY_HOME": str(home)})
         assert proc.returncode == 1 and proc.stderr.startswith("source_failed: adapter code/github tree "), extra
         extra.unlink()
     record = sources.parent / "conformance" / "code-github.json"
@@ -680,7 +698,8 @@ def test_fr_f4_binding_for_another_path_than_the_configured_one_is_refused(fake,
     assert proc.stdout.strip() == (f"refused: custom adapter code/github is configured at {other.resolve()} but bound to "
                                    f"{src.resolve()}; run bin/install-adapter code {other.resolve()} --workspace <ws>")
     wrapper = home / "agents" / "factory-dispatcher" / "sources" / "deliver"
-    proc = subprocess.run([str(wrapper)], cwd=workspace, input="{}", capture_output=True, text=True)
+    proc = subprocess.run([str(wrapper)], cwd=workspace, input="{}", capture_output=True, text=True,
+                          env={**os.environ, "COMPOZY_HOME": str(home)})
     assert proc.returncode == 1 and "but bound to" in proc.stderr
 
 

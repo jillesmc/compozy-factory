@@ -142,13 +142,20 @@ iso "$REPO/bin/migrate-memory" --workspace scratch --map vigia-pr=factory-pr-wat
 step "IT-004 gatekeeper tool allowlist (agent policy)"
 # The installed github-app-review package is only read as an install source; dummy secrets let it
 # register its tools in this home. No tool is invoked.
+dummy_secrets() {  # $1 extension, $2 dir: a dummy value for every env name this build declares (they change by release)
+  for name in $(python3 -c 'import sys, tomllib; print(" ".join(tomllib.load(open(sys.argv[1], "rb"))["extension"]["requires_env"]))' "$2/extension.toml"); do
+    case $name in
+      GITHUB_APP_BASE) v=develop ;; GITHUB_APP_PROMOTION) v="acme/acme-api:develop->main" ;;
+      GITHUB_APP_PROMOTION_APPROVERS) v=octocat ;; GITHUB_APP_REPOS) v=acme/acme-api ;;
+      GITHUB_APP_POLICY_FILE) v="$T/policy.toml" ;; NEW_RELIC_APP) v=acme-api ;; *_ID) v=1 ;; *) v=dummy ;;
+    esac
+    printf '%s' "$v" | cz extension secrets set "$1" --env "$name" --value-stdin >/dev/null
+  done
+}
 EXT=${GHAR_EXT:-$HOME/.compozy/extensions/github-app-review}
 if [ -f "$EXT/extension.toml" ]; then
   cz extension install "$EXT" --allow-unverified --yes >/dev/null
-  for kv in GITHUB_APP_BASE=develop GITHUB_APP_ID=1 GITHUB_APP_INSTALLATION_ID=1 GITHUB_APP_PRIVATE_KEY=dummy \
-            "GITHUB_APP_PROMOTION=acme/acme-api:develop->main" GITHUB_APP_PROMOTION_APPROVERS=octocat GITHUB_APP_REPOS=acme/acme-api; do
-    printf '%s' "${kv#*=}" | cz extension secrets set github-app-review --env "${kv%%=*}" --value-stdin >/dev/null
-  done
+  dummy_secrets github-app-review "$EXT"
   cz extension enable github-app-review >/dev/null
   echo "github-app-review installed from $EXT (dummy secrets)"
 else
@@ -158,9 +165,7 @@ fi
 NR=${NR_EXT:-$HOME/.compozy/extensions/newrelic}
 if [ -f "$NR/extension.toml" ]; then
   cz extension install "$NR" --allow-unverified --yes >/dev/null
-  for kv in NEW_RELIC_ACCOUNT_ID=1 NEW_RELIC_API_KEY=dummy NEW_RELIC_APP=acme-api; do
-    printf '%s' "${kv#*=}" | cz extension secrets set newrelic --env "${kv%%=*}" --value-stdin >/dev/null
-  done
+  dummy_secrets newrelic "$NR"
   cz extension enable newrelic >/dev/null
   echo "newrelic installed from $NR (dummy secrets)"
 else
@@ -271,6 +276,28 @@ cat "$T/poll-b.err"; grep -q '^source_failed: custom adapter code/github changed
 poll "$SCRATCH" | json 'assert d["items"]; print("scratch still works:", [i["key"] for i in d["items"]])'
 tty_install code "$T/adapter-b" --workspace wsb
 poll "$WSB" | json 'assert [i["key"] for i in d["items"]] == ["stub-b"], d; print("wsb restored after re-install:", [i["key"] for i in d["items"]])'
+
+step "IT-008 (daemon path) the daemon runs both approved sources from its temporary copy (dry-run check, heartbeats on)"
+# The daemon copies an approved source to a temp dir and runs it with a scrubbed environment (HOME and PATH,
+# no COMPOZY_HOME), so the wrapper must find $COMPOZY_HOME as ~/.compozy. This daemon restart gets a HOME
+# whose .compozy is the isolated home and the fake gh first on PATH, and the installed auditor's active hours
+# (12:00-14:00) widen to the whole day so its gate reaches the source; then both go back.
+mkdir -p "$T/operator"; ln -s "$HOME_DIR" "$T/operator/.compozy"
+HB=$HOME_DIR/agents/factory-auditor/HEARTBEAT.md
+cp "$HB" "$T/auditor-heartbeat.md"
+sed -i 's/start: "12:00"/start: "00:00"/; s/end: "14:00"/end: "23:59"/' "$HB"
+sed -i 's/^enabled = false$/enabled = true/' "$HOME_DIR/config.toml"
+cz daemon stop >/dev/null
+env -i HOME="$T/operator" PATH="$T/fakebin:$PATH" USER="${USER:-}" COMPOZY_HOME="$HOME_DIR" compozy daemon start >/dev/null
+for agent in factory-dispatcher factory-auditor; do
+  cz agent instance check "$agent" --workspace scratch --dry-run -o json | json '
+src = d.get("sources") or []
+print("'"$agent"' sources:", [(s["id"], s["result"], s["items"]) for s in src])
+assert src and all(s["result"] != "failing" for s in src), src'
+done
+cp "$T/auditor-heartbeat.md" "$HB"
+sed -i 's/^enabled = true$/enabled = false/' "$HOME_DIR/config.toml"
+cz daemon stop >/dev/null; cz daemon start >/dev/null
 
 step "IT-009 two workspaces, two digest-qualified user skills for one custom adapter"
 WSC=$T/wsc
