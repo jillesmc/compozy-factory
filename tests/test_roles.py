@@ -1204,3 +1204,79 @@ def test_fr_h3_an_incomplete_file_list_counts_as_protected():
     assert "When `files_truncated` is true" in read and "add a `major` finding" in read
     assert "replaced by `/`" in agent("factory-dispatcher").split("## Work log")[1]  # H-2, prompt side
     assert "GitHub" not in (REPO / "agents" / "factory-dispatcher" / "HEARTBEAT.md").read_text()  # D-4
+
+
+# ---------------------------------------------------------------- E2E-001 conformance findings (fix #4)
+
+def example_jira():
+    import tomllib
+    return tomllib.loads((REPO / "factory.example.toml").read_text())["roles"]["work"]["jira"]
+
+
+def jira_skill():
+    return (REPO / "skills" / "factory-work-jira" / "SKILL.md").read_text()
+
+
+def fields_cli(workspace, *args):
+    return subprocess.run([sys.executable, "-I", "-B", str(REPO / "skills" / "factory-work-jira" / "fields.py"), *args],
+                          cwd=workspace, capture_output=True, text=True)
+
+
+def test_e2e001_jira_create_leaves_post_create_fields_to_the_repair(workspace):
+    jira = example_jira()
+    ids = jira["fields"]
+    facts = {"kind": "feature", "attached_doc": True, "origin": "manual", "touches_ci": False}
+    out = jira_fields.fields(jira, facts, create=True)  # no --doc-yes: documentation is not on the create screen
+    assert sorted(out) == sorted(ids[k] for k in jira_fields.KEYS if k not in jira_fields.POST_CREATE)
+    assert set(jira_fields.POST_CREATE) == {"documentacao_anexa", "utilizacao_ia"}
+    proc = fields_cli(workspace, "--facts", json.dumps(facts), "--create")
+    assert proc.returncode == 0 and json.loads(proc.stdout) == out, proc.stderr
+    created = {**{fid: None for fid in ids.values()}, **out}  # the read right after the create
+    repair = jira_fields.fields(jira, facts, doc_yes="20003", current=created)
+    assert repair == {ids["documentacao_anexa"]: {"id": "20003"}, ids["utilizacao_ia"]: {"id": "20002"}}
+    create = jira_skill().split("## work.create")[1].split("\n## ")[0]
+    assert "fields.py --facts '<facts>' --create" in create and "In the same turn" in create
+    assert "`work.fields_repair`" in create and "`documentacao_anexa` and `utilizacao_ia`" in create
+
+
+def test_e2e001_jira_repair_reads_the_twg_json_envelope(workspace):
+    jira = example_jira()
+    facts = {"kind": "bugfix", "attached_doc": False, "origin": "manual", "touches_ci": False}
+    populated = {fid: {"id": "1"} for fid in jira["fields"].values()}
+    one_empty = {**populated, "customfield_10005": None}
+
+    def twg(*items):  # the live `-o json --output-summary none` shape (E2E-001 sample), fake values
+        return {"apiVersion": "v2", "command": "jira workitem get", "request": {"site": "acme.atlassian.net"},
+                "data": [{"expand": "renderedFields", "id": "10001", "self": "https://acme.atlassian.net/rest/api/3/issue/10001",
+                          "key": "ACME-1", "url": "https://acme.atlassian.net/browse/ACME-1", **item} for item in items],
+                "meta": {}}
+    for read, want in ((twg(one_empty), ["customfield_10005"]), (twg(populated), []),
+                       ({"fields": one_empty}, ["customfield_10005"]), (one_empty, ["customfield_10005"])):
+        assert list(jira_fields.fields(jira, facts, current=jira_fields.current_fields(read))) == want
+        proc = fields_cli(workspace, "--facts", json.dumps(facts), "--current", json.dumps(read))
+        assert proc.returncode == 0 and list(json.loads(proc.stdout)) == want, proc.stderr
+    partial = {k: v for k, v in populated.items() if k != "customfield_10004"}
+    failed = [{"apiVersion": "v2", "ok": False, "error": {"code": "TWG_COMMAND_FAILED"}},
+              twg(), twg(populated, populated), twg(partial),
+              {**twg(populated), "data": populated}, {"apiVersion": "v2", "data": None}]
+    for read in failed:  # F-7 stays fail closed
+        proc = fields_cli(workspace, "--facts", json.dumps(facts), "--current", json.dumps(read))
+        assert proc.returncode == 1 and proc.stdout == "" and proc.stderr.startswith("work_unavailable: "), read
+    repair = jira_skill().split("## work.fields_repair")[1].split("\n## ")[0]
+    assert "-o json --output-summary none > <file>`" in repair and "--current \"$(cat <file>)\"" in repair
+    assert "unchanged, never\nretyped" in repair
+
+
+def test_e2e001_review_maps_github_unavailable_to_review_unavailable():
+    rows = {line.split("|")[1].strip(): line for line in (REPO / "contracts" / "review.md").read_text().splitlines()
+            if line.startswith("| review.")}
+    assert all("review_unavailable" in rows[op].split("|")[4] for op in ("review.context", "review.submit", "review.gate"))
+    skill = (REPO / "skills" / "factory-review-github-app-review" / "SKILL.md").read_text()
+    assert "`github_unavailable`" in skill and "the contract's `review_unavailable` (retryable)" in skill
+    assert "(`review.context`, `review.submit`, `review.gate`)" in skill
+
+
+def test_e2e001_watcher_reads_checks_and_threads_on_every_wake():
+    step = agent("factory-pr-watcher").split("2. **Verify on every wake**")[1].split("\n3. ")[0]
+    assert "`code.pr_get` **with its `checks`**" in step and "`code.pr_threads`" in step
+    assert "never a bare `gh pr view`" in step and "if either fails, decide nothing" in step

@@ -49,7 +49,7 @@ One PR per message. Refuse any other form with `refused: expected watch: #<pr> <
 ## Procedure
 
 1. **Register.** Store `#<pr> -> <executor-session-id> (round 0)` in agent memory, only as a pointer (pointers migrated from the legacy agent may say `rodada` instead of `round`). Arm a `pull_request` monitor (`compozy__monitor_create`) on the PR branch. Answer `watching: #<pr> <executor-session-id>`.
-2. **Verify on every wake**, from scratch: `code.pr_get` and `code.pr_threads` (unresolved review threads, all pages).
+2. **Verify on every wake**, from scratch, with both operations, each by its adapter section in full (never a bare `gh pr view`, `gh pr checks` or a partial field list): `code.pr_get` **with its `checks`** (from the provider's check rollup, e.g. `statusCheckRollup`; every check on the head with name, state and URL) and its `files`, and `code.pr_threads` (unresolved review threads, all pages). Steps 3–6 decide only on this wake's two reads; if either fails, decide nothing and wait for the next wake.
 3. **Hygiene** (on the first wake and whenever head, title or body change): `code.check_hygiene` returns every violation of:
    - base `{code.base}`;
    - title starts with the work key's `title_prefix` (`work.key_format`);

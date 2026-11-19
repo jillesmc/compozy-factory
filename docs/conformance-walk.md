@@ -167,10 +167,11 @@ All covered by E2E-001 when it starts without a work key. If not:
 
 - **J1 `work.create`** (row 26) **OUTWARD**. Create in `{project}` per the SKILL.md section, summary
   `[conformance-walk] work.create`, facts `{"kind": "bugfix", "attached_doc": false, "origin": "manual", "touches_ci": false}`,
-  every field from `python3 -I -B ~/.compozy/factory/adapters/work-jira/fields.py --facts '<facts>'`.
-  Effect: key `{project}-<n>` with every required field set (same as `createjiraissue` today). Undo:
+  the fields from `python3 -I -B ~/.compozy/factory/adapters/work-jira/fields.py --facts '<facts>' --create`,
+  then in the same turn `work.fields_repair` (J3) sets the post-create fields `documentacao_anexa` and
+  `utilizacao_ia`. Effect: key `{project}-<n>` with every required field set. Undo:
   J4 moves it to Canceled; deletion needs a Jira admin.
-- **J2 `work.state`** (row 27). `twg jira workitem get <KEY> --fields status,<field ids>`. Effect: state
+- **J2 `work.state`** (row 27). `twg jira workitem get <KEY> --fields status,<field ids> -o json --output-summary none`. Effect: state
   and missing fields. Undo: none.
 - **J3 `work.fields_repair`** (row 28) **OUTWARD**. Run it on J1's item: the payload is `{}` (nothing
   to repair); then on an item with one empty required field, if one exists. Effect: fields
@@ -234,6 +235,26 @@ Run with a scratch workspace whose `factory.toml` sets `[roles.work] provider = 
   The adapter trees of code/github and work/jira changed: after `bin/install`, re-trace
   `code.issue_comment` (C5, and C7 for reopen/close) and `work.comment` (J5) before
   `bin/conformance-record`; a record from the old trace is stale.
+- **2026-11-19, E2E-001, work/jira `work.create`**: the create sent every required field and Jira
+  answered 400 "not available in the create context" for `documentacao_anexa` (customfield_14840) and
+  `utilizacao_ia` (customfield_14841): they are not on the create screen. Fixed: `fields.py --create`
+  leaves out these post-create fields (`POST_CREATE`) and the section runs `work.fields_repair` on the new
+  key in the same turn, which sets them (`[roles.work.jira.defaults]`, `--doc-yes`) and reads the item
+  back. Pinned by `test_e2e001_jira_create_leaves_post_create_fields_to_the_repair`.
+- **2026-11-19, E2E-001, work/jira `work.fields_repair`**: the section read the fields with plain
+  `twg jira workitem get <KEY> --fields <ids>` (text output) and the agent hand-typed the JSON for
+  `fields.py --current`. Fixed: the read is `… -o json --output-summary none` into a temp file passed
+  unchanged as `--current "$(cat <file>)"`; `fields.py` takes the twg envelope as sampled live
+  (`{apiVersion, command, request, data, meta}`, `data` a list of one item with the field ids directly
+  on it) and still fails closed on anything else (`ok: false`, zero or several items, missing ids; F-7). Pinned by `test_e2e001_jira_repair_reads_the_twg_json_envelope`.
+- **2026-11-19, E2E-001, review/github-app-review `review.context`**: the extension answered
+  `github_unavailable`, which is not a `contracts/review.md` error. Fixed: the adapter reports
+  `github_unavailable` as the contract's retryable `review_unavailable` for `review.context`,
+  `review.submit` and `review.gate`; `review.submit` gained `review_unavailable` in the contract (a
+  retried submit whose write landed answers `already_reviewed_head`). Pinned by
+  `test_e2e001_review_maps_github_unavailable_to_review_unavailable`.
+  The adapter trees of work/jira and review/github-app-review changed: after `bin/install`, re-trace
+  J1–J3 and R1–R3 before `bin/conformance-record`; a record from the old trace is stale.
 
 ## Finish
 

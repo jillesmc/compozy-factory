@@ -14,7 +14,10 @@ The repository is `[roles.code.github] repo` (`{repo}`); branches, promotion pai
 only from the App's approved policy, never from `factory.toml`. The reviewer is always the user-level
 `factory-reviewer`: run `python3 ~/.compozy/factory/tools/factory_guard.py reviewer <workspace>`
 before every review or re-review dispatch and dispatch nothing on `refused:`. A tool error's `Cause:`
-code is the operation error (`policy_unapproved`, `repo_not_allowed`, `pr_not_open`, …).
+code is the operation error (`policy_unapproved`, `repo_not_allowed`, `pr_not_open`, …), except
+`github_unavailable` (GitHub unreachable, timed out or a 5xx, or a history too large to read
+completely), which every operation here (`review.context`, `review.submit`, `review.gate`) reports as
+the contract's `review_unavailable` (retryable).
 
 ## review.context
 

@@ -4,10 +4,12 @@
 Usage (from the workspace root):
     fields.py --facts '{"kind": "bugfix", "attached_doc": false, "origin": "newrelic", "touches_ci": false}'
               [--doc-yes <option id>] [--value-type <[roles.work.jira.tipo_de_valor] key>]
-              [--current '<the item's current fields JSON>']
+              [--current '<`twg jira workitem get <KEY> --fields <ids> -o json --output-summary none` output>']
+              [--create]
 Prints the `fields` JSON for `twg jira workitem update --fields-json`. Nothing is derived from the key.
 With --current (work.fields_repair) only the required fields that are empty now are in the payload:
-a populated field is never overwritten.
+a populated field is never overwritten. With --create the post-create fields (POST_CREATE: Jira's
+create screen rejects them) are left out; work.fields_repair sets them right after the create.
 """
 import argparse
 import json
@@ -20,6 +22,8 @@ class WorkUnavailable(Exception):
 
 
 KEYS = ("documentacao_anexa", "utilizacao_ia", "tipo_atividade", "qual_tipo_de_valor", "plataformas_afetadas")
+# Not on Jira's create screen (live 400 "not available in the create context", E2E-001): set after create.
+POST_CREATE = ("documentacao_anexa", "utilizacao_ia")
 
 
 def assets(workspace, keys):
@@ -33,7 +37,22 @@ def empty(value):
     return value in (None, "", [], {})
 
 
-def fields(jira, facts, doc_yes=None, value_type="padrao", current=None):
+def current_fields(read):
+    """The fields of a read. twg `-o json --output-summary none` answers {apiVersion, command, request, data,
+    meta} with `data` a list of the items read and each item's fields directly on it (sampled live,
+    E2E-001); exactly one item is accepted. A REST `{"fields": {...}}` body or bare fields pass through.
+    Anything else fails here or the completeness check in `fields` (fail closed, F-7)."""
+    if isinstance(read, dict) and "apiVersion" in read:
+        items = read.get("data")
+        if not (isinstance(items, list) and len(items) == 1 and isinstance(items[0], dict)):
+            raise WorkUnavailable("the twg read holds no single work item; not repairing")
+        return items[0]
+    if isinstance(read, dict) and isinstance(read.get("fields"), dict):
+        return read["fields"]
+    return read
+
+
+def fields(jira, facts, doc_yes=None, value_type="padrao", current=None, create=False):
     """The payload for every required field, or with `current` only for those empty in it (F-1)."""
     if facts.get("kind") not in ("bugfix", "feature"):
         raise ValueError("facts kind must be bugfix or feature")
@@ -61,7 +80,8 @@ def fields(jira, facts, doc_yes=None, value_type="padrao", current=None):
              "tipo_atividade": lambda: {"id": jira["tipo_atividade"][facts["kind"]]},
              "qual_tipo_de_valor": lambda: assets(ws, jira["tipo_de_valor"][value_type]),
              "plataformas_afetadas": platforms}
-    return {ids[key]: build[key]() for key in KEYS if current is None or empty(current.get(ids[key]))}
+    keys = [k for k in KEYS if not (create and k in POST_CREATE)]
+    return {ids[key]: build[key]() for key in keys if current is None or empty(current.get(ids[key]))}
 
 
 def main():
@@ -70,15 +90,17 @@ def main():
     p.add_argument("--doc-yes")
     p.add_argument("--value-type", default="padrao")
     p.add_argument("--current", help="the item's current fields (work.fields_repair): only empty ones are sent")
+    p.add_argument("--create", action="store_true", help="the work.create payload: without the POST_CREATE fields")
     a = p.parse_args()
     conf = tomllib.loads(Path(".compozy/factory/factory.toml").read_text())
     try:
         current = json.loads(a.current) if a.current is not None else None
     except json.JSONDecodeError as exc:
         raise WorkUnavailable(f"current item fields are not JSON ({exc})") from exc
-    if isinstance(current, dict) and isinstance(current.get("fields"), dict):
-        current = current["fields"]
-    print(json.dumps(fields(conf["roles"]["work"]["jira"], json.loads(a.facts), a.doc_yes, a.value_type, current)))
+    if current is not None:
+        current = current_fields(current)
+    print(json.dumps(fields(conf["roles"]["work"]["jira"], json.loads(a.facts), a.doc_yes, a.value_type, current,
+                            a.create)))
 
 
 if __name__ == "__main__":
