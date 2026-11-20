@@ -360,7 +360,7 @@ env GIT_CONFIG_GLOBAL="$MIG/gitconfig" GIT_CONFIG_NOSYSTEM=1 PATH="$MIG/bin:$PAT
 import os, pty, subprocess, sys
 master, slave = pty.openpty()
 proc = subprocess.Popen(sys.argv[1:], stdin=slave)
-os.close(slave); os.write(master, b"octocat\n"); sys.exit(proc.wait())
+os.close(slave); os.write(master, b"octocat\n\n"); sys.exit(proc.wait())
 EOF
 mkdir -p "$MIG/migrated/.compozy/factory"
 for f in .compozy/factory/factory.toml .compozy/newrelic.toml; do
@@ -430,7 +430,7 @@ EOF
   [ "$(gpolicy)" = "approved $V1" ] || { echo "refusal changed the policy: $(gpolicy)"; exit 1; }
   cz agent instance list --workspace setupws -o json | json 'assert not d["instances"], d'
   echo "no TTY: refused after the preflight; no file, no gh call, policy still V1, no instance"
-  setup_run $'acme-api-prod\n1234567\noctocat\ny\n' | tee "$SG/setup.out"
+  setup_run $'acme-api-prod\n1234567\n\noctocat\ny\n' | tee "$SG/setup.out"
   V2=$(sha256sum "$POL" | cut -d' ' -f1)
   [ "$(gpolicy)" = "approved $V2" ] && [ "$V2" != "$V1" ] && [ -f "$T/policies/$V1.toml" ] || { echo "policy not switched to V2: $(gpolicy)"; exit 1; }
   echo "daemon: --cmd policy reports V2 ${V2:0:12} active; V1 kept on disk"

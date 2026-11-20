@@ -300,7 +300,7 @@ op env GITHUB_APP_POLICY_FILE="$T/policy/policy.toml" python3 - "$REPO/bin/migra
 import os, pty, subprocess, sys
 master, slave = pty.openpty()
 proc = subprocess.Popen(sys.argv[1:], stdin=slave)
-os.close(slave); os.write(master, b"octocat\n"); sys.exit(proc.wait())
+os.close(slave); os.write(master, b"octocat\n\n"); sys.exit(proc.wait())
 EOF
 grep -q '^policy     staged .*policies/' "$T/migrate.out"
 # GitHub's merge button, simulated in a separate clone: the workspace checkout only fast-forwards to it.

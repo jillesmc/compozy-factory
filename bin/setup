@@ -5,13 +5,16 @@ Usage: bin/setup <workspace> [--from <factory.toml>] [--allow-unsupported-adapte
 
 Preflight (read-only: no file write, no GitHub call before the label check, no CompozyOS mutation) prints every
 change: the extensions, the project files it writes (`.compozy/factory/factory.toml` from --from when missing,
-`.compozy/newrelic.toml` from answers on stdin, `REVIEW.md` from a template; protected paths are marked `(protected
-path)`, BR-18), the labels, the github-app-review policy block and the active policy digest change, the PR
-preconditions (checkout on the delivery base, empty index, origin, files absent on origin/<base>, factory/setup
-absent or identical; read-only, no fetch), and the agents bin/attach creates (adapters verified against their
-conformance records, BR-11, and the reviewer guard, BR-16). Any refusal stops it there. A policy change needs an
-interactive terminal (BR-12): with stdin not a TTY it refuses after the preflight with `refused: policy
-confirmation needs an interactive terminal`.
+`.compozy/newrelic.toml` from answers on stdin, `REVIEW.md` from a template; on a terminal, the optional
+`[roles.deploy] paths` trigger sets of a factory.toml it writes (includes, then excludes, comma-separated outside
+`{}` and `[]`; an empty includes ends the list; none: absent, so every train waits for a Deployment); protected
+paths are marked `(protected path)`, BR-18), the deploy trigger sets (or the note that they are absent), the
+labels, the github-app-review policy block and the active policy digest change, the PR preconditions (checkout on
+the delivery base, empty index, origin, files absent on origin/<base>, factory/setup absent or identical;
+read-only, no fetch), and the agents bin/attach creates (adapters verified against their conformance records,
+BR-11, and the reviewer guard, BR-16). Any refusal stops it there. A policy change needs an interactive terminal
+(BR-12): with stdin not a TTY it refuses after the preflight with `refused: policy confirmation needs an
+interactive terminal`.
 Apply (after `y`): add the block to the policy working copy (refused when it changed since the preflight), stage
 it (bin/stage-policy), set GITHUB_APP_POLICY_DIGEST and verify the new version active (restarting the extension
 when the running process still reports the old one), smoke an already-served repository with pr_context. Any
@@ -134,7 +137,21 @@ def newrelic_text():
     return f"app = {json.dumps(app)}\naccount_id = {int(account)}\n"
 
 
-def preflight_files(root, source):
+def with_deploy_paths(text, tty):
+    """On a terminal, ask for [roles.deploy] paths when the factory.toml setup writes has none (none: absent); the
+    sets are appended as [[roles.deploy.paths]] tables."""
+    try:
+        if not tty or "paths" in tomllib.loads(text)["roles"]["deploy"]:
+            return text
+    except (tomllib.TOMLDecodeError, KeyError, TypeError):
+        return text  # load_factory_toml names the problem
+    for trigger in fl.ask_deploy_paths() or []:
+        text += "\n[[roles.deploy.paths]]\n" + "".join(f"{key} = {json.dumps(trigger[key])}\n"
+                                                      for key in ("includes", "excludes") if key in trigger)
+    return text
+
+
+def preflight_files(root, source, tty):
     """{rel: text} of the project files to write; refuses a --from that would overwrite factory.toml."""
     writes = {}
     toml = root / REL_TOML
@@ -154,12 +171,17 @@ def preflight_files(root, source):
         writes[REL_NR] = newrelic_text()
     if not (root / REL_REVIEW).is_file():
         writes[REL_REVIEW] = REVIEW_TEMPLATE
+    if REL_TOML in writes:
+        writes[REL_TOML] = with_deploy_paths(writes[REL_TOML], tty)
     _, conf = fl.load_factory_toml(root, writes)
     for rel in (REL_TOML, REL_NR, REL_REVIEW):
         if rel in writes:
             line("preflight", write_mark(rel))
         elif (root / rel).is_file():
             line("preflight", f"exists {rel}")
+    sets = conf["roles"]["deploy"].get("paths")
+    for text in fl.deploy_paths_lines(sets):
+        line("preflight", f"deploy {text}" if sets else text)
     return writes, conf
 
 
@@ -453,7 +475,7 @@ def main():
     ws, tty = args.workspace, sys.stdin.isatty()
     root = fl.workspace_root(ws)
 
-    writes, conf = preflight_files(root, args.source)
+    writes, conf = preflight_files(root, args.source, tty)
     if providers(conf, "code") != ["github"]:
         fl.refuse("bin/setup supports the code provider github (v1 adapters)")
     guard = verify(ws, root, conf, args.allow_unsupported_adapter)

@@ -61,7 +61,7 @@ def pushed(root, env, rel):
     return git("show", f"origin/factory/migrate-roles:{rel}", cwd=root, env=env)
 
 
-def migrate(root, env, answer="octocat, hubot\n"):
+def migrate(root, env, answer="octocat, hubot\n\n"):  # approvers, deploy paths (none)
     return run_tty("migrate-config", str(root), env=env, answer=answer)
 
 
@@ -369,3 +369,25 @@ def test_fr_ut_062_the_extension_loader_accepts_the_staged_file_and_agrees_on_ev
     assert result["repos"] == ["acme/acme-api"]
     assert result["verdicts"] == [False] * len(G4_REFUSED) + [True] * len(G4_ACCEPTED)
 
+
+
+def test_fix6_migrate_asks_for_deploy_trigger_sets(proj):
+    root, env = proj
+    proc = migrate(root, env, "octocat\nacme-portal/**, packages/*/migrations/**\n**/*.{md,rst}\nweb/**\n\n\n")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "deploy     trigger set 1: includes acme-portal/**, packages/*/migrations/**; excludes **/*.{md,rst}" in proc.stdout
+    assert "deploy     trigger set 2: includes web/**" in proc.stdout
+    deploy = tomllib.loads(pushed(root, env, TOML))["roles"]["deploy"]
+    assert deploy["paths"] == [{"includes": ["acme-portal/**", "packages/*/migrations/**"], "excludes": ["**/*.{md,rst}"]},
+                               {"includes": ["web/**"]}]
+    assert deploy["provider"] == "github-deployments"
+
+
+def test_fix6_migrate_notes_absent_deploy_paths(proj):
+    root, env = proj
+    proc = run("migrate-config", str(root), "--dry-run", env=env, stdin="")
+    assert f"{fl.NO_DEPLOY_PATHS} (asked on the real run)" in proc.stdout
+    proc = migrate(root, env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert fl.NO_DEPLOY_PATHS in proc.stdout
+    assert "paths" not in tomllib.loads(pushed(root, env, TOML))["roles"]["deploy"]

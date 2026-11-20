@@ -16,6 +16,7 @@ from factory_guard import (ROLES, Refused, adapter_path, bindings, check_skill, 
                            compozy_home, named_skill, reviewer,
                            custom_configured, file_sha256, find_binding, installed_record, resolve,
                            short, tree_digest, tree_files, workspace_root, write_json)
+from factory_deploy import check_paths, split_globs  # noqa: E402  (the one trigger-set matcher)
 AGENTS = ["factory-sentinel", "factory-scribe", "factory-dispatcher",
           "factory-pr-watcher", "factory-gatekeeper", "factory-auditor"]
 ON_DEMAND = ["factory-reviewer"]  # started per task by another agent; bin/attach never creates an instance
@@ -227,9 +228,13 @@ def _check_roles(root, conf, overlay):
     found = adapters(root, conf)
     for role in ROLES:
         listed = {p for (r, p) in found if r == role}
-        stray = sorted(set(roles[role]) - {"provider", "adapter", "adapters", *listed})
+        neutral = {"paths"} if role == "deploy" else set()  # provider-neutral role keys
+        stray = sorted(set(roles[role]) - {"provider", "adapter", "adapters", *neutral, *listed})
         if stray:
             refuse(f"unknown key [roles.{role}] {stray[0]}")
+    problem = check_paths(roles["deploy"].get("paths"))  # the release pipeline's trigger sets; absent: always wait
+    if problem:
+        refuse(problem)
     for (role, provider), (_, meta, _) in found.items():
         where, sub = f"[roles.{role}.{provider}]", roles[role].get(provider)
         schema = meta.get("schema") or {}
@@ -637,6 +642,35 @@ def ask_approvers(repo):
     if not logins or any(not re.fullmatch(r"[A-Za-z0-9-]+", a) for a in logins):
         refuse("approvers must be one or more GitHub logins separated by commas")
     return logins
+
+
+NO_DEPLOY_PATHS = ("deploy paths absent: every train waits for a Deployment (add [roles.deploy] paths in a PR to "
+                   "close trains that trigger no pipeline at their merge)")
+
+
+def ask_deploy_paths():
+    """[roles.deploy] paths from the operator's terminal, one trigger set at a time (the release pipeline's
+    `file_paths` globs, comma-separated outside `{}` and `[]`); an empty includes (or end of input) ends the list.
+    None when no set."""
+    def globs(prompt):
+        try:
+            return split_globs(input(prompt))
+        except EOFError:
+            return []
+    hint = "comma-separated globs; a comma inside {} or [] stays in its glob"
+    sets = []
+    while includes := globs(f"deploy     trigger set {len(sets) + 1} includes ({hint}; empty: done): "):
+        excludes = globs(f"deploy     trigger set {len(sets) + 1} excludes ({hint}; empty: none): ")
+        sets.append({"includes": includes, **({"excludes": excludes} if excludes else {})})
+    return sets or None
+
+
+def deploy_paths_lines(sets):
+    """The preflight lines of [roles.deploy] paths (or the note that they are absent)."""
+    if not sets:
+        return [NO_DEPLOY_PATHS]
+    return [f"trigger set {n}: includes {', '.join(s['includes'])}"
+            + (f"; excludes {', '.join(s['excludes'])}" if s.get("excludes") else "") for n, s in enumerate(sets, 1)]
 
 
 def write_working_copy(working, data):

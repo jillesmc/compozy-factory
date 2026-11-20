@@ -89,6 +89,15 @@ provider = "github-app-review"
 
 [roles.deploy]
 provider = "github-deployments"
+# Optional: the release pipeline's trigger sets, copied from its CodePipeline V2 `file_paths` blocks (one
+# [[roles.deploy.paths]] per block). A deploy is expected when any set has a changed file matching one of its
+# includes and none of its excludes. CodePipeline globs: `*` and `?` stay inside one path segment, `**` matches
+# any depth (also none: `**/*.md` matches README.md), `{a,b}`, `[abc]`, `[!abc]`, `\` escapes; a malformed glob
+# is refused. The gatekeeper decides with tools/factory_deploy.py. A promotion that triggers no set closes at its
+# merge time without waiting for a Deployment. Absent: every train waits for a Deployment.
+# [[roles.deploy.paths]]
+# includes = ["src/**", "package.json"]
+# excludes = ["**/*.md"]          # optional
 
 [roles.deploy.github-deployments]
 environment = "main"      # optional: GitHub Deployments environment of the release; default [roles.code.github] release

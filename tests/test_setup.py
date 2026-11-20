@@ -40,7 +40,7 @@ json.dump(state, open(os.environ["FAKE_GH_STATE"], "w"))
 '''
 V1_POLICY = ('[repos."acme/other-api"]\ndelivery_base = "develop"\npromotion = { head = "develop", base = "main" }\n'
              'approvers = ["octocat"]\n')
-ANSWERS = "acme-api-prod\n1234567\noctocat\ny\n"  # New Relic app, account, promotion approvers, confirmation
+ANSWERS = "acme-api-prod\n1234567\n\noctocat\ny\n"  # New Relic app, account, deploy paths (none), approvers, confirmation
 READ_ONLY = (["workspace", "info"], ["extension", "list"],
              ["extension", "exec", "github-app-review", "--cmd", "policy"], ["agent", "info"],
              ["agent", "instance", "list"], ["agent", "heartbeat", "sources"], ["skill", "info"])
@@ -304,7 +304,7 @@ def test_s6_3_preflight_shows_the_exact_block_of_every_added_repository(fake, en
     working = fl.policy_paths(env)[0]
     extra = '[repos."acme/c"]\ndelivery_base = "main"\napprovers = ["mallory"]\n'
     working.write_text(V1_POLICY + "\n" + extra)
-    proc = setup(project, env, answers="acme-api-prod\n1234567\noctocat\nn\n")
+    proc = setup(project, env, answers="acme-api-prod\n1234567\n\noctocat\nn\n")
     out = proc.stdout
     assert "preflight  policy: this block, already in the working copy" in out
     assert "\n".join("             " + t for t in extra.splitlines()) in out
@@ -312,7 +312,7 @@ def test_s6_3_preflight_shows_the_exact_block_of_every_added_repository(fake, en
     assert "added: acme/acme-api, acme/c)" in out
     # the onboarded repo already in the working copy: its exact block is shown too
     working.write_text(V1_POLICY + "\n" + fl.policy_block("acme/acme-api", "develop", "main", ["hubot"]))
-    out = setup(project, env, answers="acme-api-prod\n1234567\nn\n").stdout
+    out = setup(project, env, answers="acme-api-prod\n1234567\n\nn\n").stdout
     assert ("preflight  policy: this block, already in the working copy" in out
             and '             approvers = ["hubot"]' in out)
 
@@ -325,7 +325,7 @@ def test_s6_4_a_working_copy_edited_during_the_prompt_is_refused(fake, env, proj
     argv = [str(REPO / "bin" / "setup"), str(project), "--from", str(REPO / "factory.example.toml")]
     proc = subprocess.Popen(argv, stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=full)
     os.close(slave)
-    os.write(master, b"acme-api-prod\n1234567\noctocat\n")
+    os.write(master, b"acme-api-prod\n1234567\n\noctocat\n")
     seen = ""
     while not seen.endswith("[y/N] "):  # the preflight is done and waits at the confirmation
         seen += proc.stdout.read(1) or pytest.fail(seen)
@@ -354,7 +354,7 @@ def test_s6_5_served_repo_with_another_promotion_is_refused(fake, env, project):
 
 
 def test_s6_6_eof_at_the_approvers_prompt_refuses_without_traceback(fake, env, project):
-    proc = setup(project, env, answers="acme-api-prod\n1234567\n\x04")
+    proc = setup(project, env, answers="acme-api-prod\n1234567\n\n\x04")
     assert proc.returncode == 1
     assert proc.stdout.splitlines()[-1].endswith(": refused: approvers: no answer (end of input)")
     assert "Traceback" not in proc.stderr
@@ -442,7 +442,33 @@ def test_s6_8_rerun_after_a_failed_pr_create_reuses_the_identical_branch(fake, e
     gh_state = json.loads(open(env["FAKE_GH_STATE"]).read())
     gh_state["fail"] = []
     open(env["FAKE_GH_STATE"], "w").write(json.dumps(gh_state))
-    again = setup(project, env, answers="acme-api-prod\n1234567\ny\n")
+    again = setup(project, env, answers="acme-api-prod\n1234567\n\ny\n")
     assert again.returncode == 0, again.stdout + again.stderr
     assert "preflight  branch factory/setup already on origin with these files; open or reuse its PR" in again.stdout
     assert "pr         #241 opened into develop" in again.stdout and (project / "REVIEW.md").is_file()
+
+
+def test_fix6_setup_asks_for_deploy_trigger_sets_on_a_terminal(fake, env, project):
+    answers = "acme-api-prod\n1234567\nsrc/**/*.{py,js}, Dockerfile\n**/*.md\nweb/**\n\n\noctocat\ny\n"
+    proc = setup(project, env, answers=answers)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = proc.stdout
+    for prompt in ("deploy     trigger set 1 includes (comma-separated globs; a comma inside {} or [] stays in its glob; empty: done):",
+                   "deploy     trigger set 1 excludes (comma-separated globs; a comma inside {} or [] stays in its glob; empty: none):",
+                   "deploy     trigger set 3 includes"):
+        assert prompt in out, prompt
+    assert "preflight  deploy trigger set 1: includes src/**/*.{py,js}, Dockerfile; excludes **/*.md" in out
+    assert "preflight  deploy trigger set 2: includes web/**\n" in out
+    assert out.index("preflight  deploy trigger set 1") < out.index("apply all of the above? [y/N]")
+    _, conf = fl.load_factory_toml(project)
+    assert conf["roles"]["deploy"]["paths"] == [{"includes": ["src/**/*.{py,js}", "Dockerfile"], "excludes": ["**/*.md"]},
+                                                {"includes": ["web/**"]}]
+
+
+def test_fix6_setup_notes_absent_deploy_paths(fake, env, project):
+    proc = setup(project, env, answers="acme-api-prod\n1234567\n", tty=False)  # no terminal: never asked
+    assert "deploy     paths that trigger" not in proc.stdout and f"preflight  {fl.NO_DEPLOY_PATHS}" in proc.stdout
+    proc = setup(project, env)  # empty answer: absent
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert f"preflight  {fl.NO_DEPLOY_PATHS}" in proc.stdout and "every train waits for a Deployment" in proc.stdout
+    assert "paths" not in fl.load_factory_toml(project)[1]["roles"]["deploy"]

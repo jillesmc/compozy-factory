@@ -494,6 +494,42 @@ def test_fr_ut_060_jira_fields_come_from_facts_only():
         jira_fields.fields(jira, facts)  # attached_doc without the yes option id
 
 
+# ---------------------------------------------------------------- fix6: [roles.deploy] paths (E2E-003 #241)
+
+def test_fix6_deploy_paths_are_optional_trigger_sets_of_the_deploy_role(workspace):
+    _, conf = fl.load_factory_toml(workspace)
+    assert "paths" not in conf["roles"]["deploy"], "absent by default: every train waits for a Deployment"
+    sets = ('[[roles.deploy.paths]]\nincludes = ["acme-portal/**", "packages/metrics-store/migrations/**"]\n'
+            'excludes = ["acme-portal/web/**", "**/*.md"]\n\n[[roles.deploy.paths]]\nincludes = ["acme-portal/web/**"]\n')
+    text = toml_path(workspace).read_text()
+    toml_path(workspace).write_text(text + "\n" + sets)
+    _, conf = fl.load_factory_toml(workspace)
+    assert conf["roles"]["deploy"]["paths"] == [
+        {"includes": ["acme-portal/**", "packages/metrics-store/migrations/**"],
+         "excludes": ["acme-portal/web/**", "**/*.md"]},
+        {"includes": ["acme-portal/web/**"]}]
+    message = ("refused: [roles.deploy] paths must be one or more [[roles.deploy.paths]] sets: includes = a non-empty "
+               "list of globs, excludes = an optional list of globs (non-empty strings)")
+    for bad in ('[roles.deploy.paths]\nincludes = ["a/**"]\n',                # a table, not a list of sets
+                '[[roles.deploy.paths]]\nexcludes = ["a/**"]\n',             # includes missing
+                '[[roles.deploy.paths]]\nincludes = []\n',
+                '[[roles.deploy.paths]]\nincludes = ["a/**", ""]\n',
+                '[[roles.deploy.paths]]\nincludes = ["a/**"]\nexcludes = ["  "]\n',
+                '[[roles.deploy.paths]]\nincludes = ["a/**"]\nfilters = ["b"]\n'):
+        toml_path(workspace).write_text(text + "\n" + bad)
+        assert refusal(workspace) == message, bad
+    toml_path(workspace).write_text(text + '\n[[roles.deploy.paths]]\nincludes = ["a/**"]\nexcludes = []\n')
+    assert fl.load_factory_toml(workspace), "excludes may be empty"
+    malformed = (("src/*.{py,js", "missing }"), ("src/[ab.py", "missing ]"), ("src/*.py}", "} without {"),
+                 ("a{b,{c,d}}", "nested {"), ("src/\\\\", "trailing backslash"))  # TOML "src/\\" is the glob src/\
+    for bad, why in malformed:
+        toml_path(workspace).write_text(text + f'\n[[roles.deploy.paths]]\nincludes = ["ok/**"]\nexcludes = ["{bad}"]\n')
+        assert refusal(workspace).startswith("refused: [roles.deploy] paths: glob ") and why in refusal(workspace), bad
+    toml_path(workspace).write_text(text)
+    edit(workspace, '[roles.code]\nprovider = "github"\n', '[roles.code]\nprovider = "github"\npaths = ["src/**"]\n')
+    assert refusal(workspace) == "refused: unknown key [roles.code] paths", "paths belong to the deploy role only"
+
+
 # ---------------------------------------------------------------- UT-045, UT-071: protected paths
 
 def test_fr_ut_045_protected_paths_list():

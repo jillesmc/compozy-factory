@@ -3,15 +3,17 @@
 
 Usage: bin/migrate-config <workspace> [--dry-run]
 
-Old grammar → `[roles.*]` (lossless: every old value lands under its mapped key, or the script refuses);
-the old `[newrelic]` becomes the extension-owned `.compozy/newrelic.toml`. On the operator's terminal it
-asks for the promotion approvers (the old GITHUB_APP_PROMOTION_APPROVERS is a write-only secret) and
-refuses on a non-interactive stdin before writing anything. Then it commits both files on a branch
-`factory/migrate-roles` from `origin/<base>` in a temporary worktree (the workspace checkout is never
-touched), pushes it and opens the PR into `<base>` (protected paths: the operator merges it outside the
-factory). Finally it adds the repository's block to the github-app-review policy working copy and stages
-it through bin/stage-policy; nothing is activated (the runbook switches GITHUB_APP_POLICY_DIGEST). It
-never reads or prints a secret. A file already in the role grammar is reported `unchanged`.
+Old grammar → `[roles.*]` (lossless: every old value lands under its mapped key, or the script refuses); the old
+`[newrelic]` becomes the extension-owned `.compozy/newrelic.toml`. On the operator's terminal it asks for the
+promotion approvers (the old GITHUB_APP_PROMOTION_APPROVERS is a write-only secret) and the optional
+`[roles.deploy] paths` (the release pipeline's trigger sets, one at a time: includes, then excludes,
+comma-separated outside `{}` and `[]`; an empty includes ends the list; none: absent, every train waits for a
+Deployment), and refuses on a non-interactive stdin before writing anything. Then it commits both files on a
+branch `factory/migrate-roles` from `origin/<base>` in a temporary worktree (the workspace checkout is never
+touched), pushes it and opens the PR into `<base>` (protected paths: the operator merges it outside the factory).
+Finally it adds the repository's block to the github-app-review policy working copy and stages it through
+bin/stage-policy; nothing is activated (the runbook switches GITHUB_APP_POLICY_DIGEST). It never reads or prints
+a secret. A file already in the role grammar is reported `unchanged`.
 --dry-run prints the converted files and writes nothing (no prompt, git, GitHub or policy change).
 """
 import argparse
@@ -160,13 +162,18 @@ def main():
     if args.dry_run:
         print(f"--- {REL_TOML}\n{toml_text}--- {REL_NR}\n{nr_text}"
               f"--- policy block for {repo}: delivery_base {base}, promotion {base} -> {release}, "
-              "approvers asked on the real run\ndry-run: nothing written")
+              f"approvers asked on the real run\n{fl.NO_DEPLOY_PATHS} (asked on the real run)\ndry-run: nothing written")
         return 0
     if not sys.stdin.isatty():
         fl.refuse("promotion approvers need an interactive terminal (stdin is not a TTY)")
     print(f"converted  {REL_TOML} ({len([s for s in fl.OLD_SECTIONS if s in old])} sections → [roles.*])")
     print(f"newrelic   {REL_NR} (app, account_id from the old [newrelic])")
     block = fl.policy_block(repo, base, release, fl.ask_approvers(repo))
+    paths = fl.ask_deploy_paths()
+    if paths:
+        new["roles"]["deploy"]["paths"] = paths
+        toml_text = dump(new)
+    print("\n".join(f"deploy     {text}" if paths else text for text in fl.deploy_paths_lines(paths)))
     try:
         working, data = fl.plan_policy(repo, block)
     except ValueError as exc:

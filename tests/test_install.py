@@ -8,7 +8,7 @@ from conftest import run
 
 AGENTS = fl.AGENTS + fl.ON_DEMAND  # install copies every factory-* dir, on-demand ones included
 ADAPTERS = sorted(f"{r}-{p}" for r, p in fl.bundled_adapters())
-TOOLS = "factory_envelope.py, factory_external.py, factory_guard.py, factory_intake.py"
+TOOLS = "factory_deploy.py, factory_envelope.py, factory_external.py, factory_guard.py, factory_intake.py"
 
 
 def snapshot(root):
