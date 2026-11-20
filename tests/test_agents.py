@@ -348,3 +348,33 @@ def test_fix6_no_deploy_is_operator_only_and_closes_a_waiting_train():  # operat
                      "`no-match`) and the promotion PR as the deploy link, then step 6 (its notice says no deploy) and "
                      "the `post_merge_done:` of the train's continued PRs.")
     assert "may still answer `no_deploy: #<promotion>`" in text, "the absent warning offers the operator command"
+
+
+def test_fix9_dispatcher_cleans_up_the_executor_on_merged_and_closed():  # E2E-002 PR #14, 2026-11-20
+    dispatcher, gatekeeper = agent_text("factory-dispatcher"), agent_text("factory-gatekeeper")
+    follow = dispatcher.split("## Follow up")[1].split("## External merge")[0]
+    assert "- `merged:`: close the entry `[x]` with the merge, then run **Executor cleanup** for `merged:`.\n" in follow
+    assert "- `closed:`: close it with the reason, run **Executor cleanup** for `closed:`, and put" in follow
+    cleanup = follow.split("**Executor cleanup**", 3)[3]
+    for clause in (  # exact clauses: each action and each guard of the cleanup
+        ("Take the session id from the message and check it equals the entry's `session:`; "
+         "take the worktree from the entry's `worktree:`."),
+        "If they differ, stop: archive nothing, remove nothing and report it to the operator.",
+        ("Never archive or stop a session of an always-on agent (factory-dispatcher, factory-pr-watcher, "
+         "factory-scribe, factory-sentinel, factory-auditor, factory-gatekeeper)"),
+        "Each step is idempotent and a no-op when already done:",
+        ("\n1. Archive that executor session (`compozy session archive <id> --stop`, "
+         "only when `compozy__session_status` shows agent `code_implementer`).\n"),
+        "\n2. Remove the worktree with `compozy__worktree_remove`. ",
+        ("On `merged:`, `delete_branch: true` only when the branch is merged "
+         "(its HEAD is the `head_sha` that `code.pr_get` reports `merged`); otherwise keep the branch."),
+        ("On `closed:`, keep the branch (`delete_branch: false`) "
+         "and remove the worktree only when `compozy__worktree_inspect` reports it clean."),
+        "A worktree with uncommitted changes stays (never `force: true` here): report it to the operator.",
+        ("\n3. Archive **only** the PR's live `factory-reviewer` sessions, "
+         "each together with its `review-<pr>-…`/`rereview-<pr>-…` worktree.\n"),
+    ):
+        assert clause in cleanup, clause
+    merge = gatekeeper.split("## Merge into the base branch")[1].split("\n## ")[0]
+    assert "archive" not in merge and "worktree_remove" not in merge and "executor" not in merge
+    assert "3. Upsert the **promotion PR**" in merge and "4. Answer `merged #<pr> at <sha>`." in merge

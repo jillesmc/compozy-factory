@@ -75,9 +75,8 @@ Refusal: `refused #<pr>: <first condition that failed>` to the sender, and stop.
 
 1. Only after every check above passed, including the merge gate: `code.pr_merge` with head = the full SHA and expected base `{code.base}`. Its first step is `factory_guard.py premerge {code.repo} <pr> {code.base} <full-sha>`: on `refused:` (`base_changed`, `head_moved`) answer `refused #<pr>: <error>` and merge nothing. It confirms the merge and returns the merge commit.
 2. Do not transition the work item here: Done comes only after the deploy.
-3. **Cleanup:** archive **only** the executor session whose id came in the `watch:`/`merged:` (the `<executor-session-id>`; check with `compozy__session_status` that its agent is `code_implementer`). Never archive or stop a session of an always-on agent (factory-dispatcher, factory-pr-watcher, factory-scribe, factory-sentinel, factory-auditor, factory-gatekeeper), even if it shows up as the worktree's creator. Command: `compozy session archive <id> --stop`, and remove the worktree with `compozy__worktree_remove` (`delete_branch: true`). If the worktree has uncommitted changes or a HEAD different from the merged head, save `git diff` + `git log -p origin/{code.base}..HEAD` to `.compozy/patches/<worktree>.patch`, keep the worktree and report it.
-4. Upsert the **promotion PR** (below).
-5. Answer `merged #<pr> at <sha>`.
+3. Upsert the **promotion PR** (below).
+4. Answer `merged #<pr> at <sha>`.
 
 ## Continue after an external merge
 
