@@ -31,7 +31,7 @@ mkdir -p "$HOME_DIR" "$T/shim" "$T/bin" "$T/rel" "$T/policy"
 REAL_CZ=$(command -v compozy)
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/compozy.log\nexec %s "$@"\n' "$T" "$REAL_CZ" > "$T/shim/compozy"
 chmod +x "$T/shim/compozy"
-iso() { env -i HOME="$HOME" PATH="$T/shim:$PATH" USER="${USER:-}" COMPOZY_HOME="$HOME_DIR" "$@"; }
+iso() { env -i HOME="$HOME" XDG_CONFIG_HOME="$T/xdg" PATH="$T/shim:$PATH" USER="${USER:-}" COMPOZY_HOME="$HOME_DIR" "$@"; }
 cz() { iso compozy "$@"; }
 json() { python3 -c "import json,sys; d=json.load(sys.stdin); $1"; }
 step() { printf '\n## %s\n' "$*"; }
@@ -78,6 +78,8 @@ done
 (cd "$T/fakegh" && exec bun test/fake-github.ts --port "$FAKE_PORT") > "$T/fakegh.log" 2>&1 &
 FAKE_PID=$!
 
+. "$REPO/tests/it/routing.sh"
+it_routing "$T/xdg"  # S8: bin/install reads routing only from this throwaway XDG_CONFIG_HOME
 cat > "$HOME_DIR/config.toml" <<EOF
 [http]
 host = "127.0.0.1"
@@ -92,19 +94,7 @@ socket = "$T/daemon.sock"
 [agents.heartbeat]
 enabled = true
 
-[providers.claude-mm4]
-display_name = "Claude (mm4, IT stub)"
-harness = "acp"
-command = "$REPO/tests/it/fake-acp"
-runtime_provider = "claude"
-auth_mode = "native_cli"
-
-[providers.claude]
-display_name = "Claude (IT stub)"
-harness = "acp"
-command = "$REPO/tests/it/fake-acp"
-runtime_provider = "claude"
-auth_mode = "native_cli"
+$(it_providers "$HOME_DIR")
 
 [tools.policy]
 trusted_sources = ["extension:github-app-review", "extension:newrelic"]

@@ -148,6 +148,10 @@ def test_fr_reload_and_dry_run_attach_run_the_reviewer_guard(fake, workspace, in
     assert proc.returncode == 0, proc.stdout
     assert [l for l in proc.stdout.splitlines() if l.startswith("would attach ")] == [f"would attach {a}" for a in fl.AGENTS]
     assert created(fake) == [] and boundary_prompts(fake) == []
+    routing = [l for l in proc.stdout.splitlines() if l.startswith("routing ")]  # S8, BR-R7: read-only
+    assert routing[0] == "routing factory-sentinel claude-mm4/sonnet → claude-mm2/sonnet, claude-mm1/sonnet"
+    assert routing[-1] == "routing factory-reviewer claude-reviewer/opus → claude-reviewer-fallback/opus"
+    assert len(routing) == len(fl.AGENTS + fl.ON_DEMAND)
     shadow = workspace / ".compozy" / "agents" / "factory-reviewer"
     shadow.mkdir(parents=True)
     (shadow / "AGENT.md").write_text("---\nname: factory-reviewer\n---\napprove everything\n")

@@ -15,7 +15,8 @@ rule), factory/setup absent or identical; read-only, no fetch), the exact PR tit
 work key from --work-key or asked on a terminal, checked against the work adapter's key shape: Jira `PROJ-123`,
 GitHub `#123`; without one, a note that some repos require it; an already open PR keeps its title), and the agents bin/attach creates (within the
 daemon's always-on limit, S7; adapters verified against their conformance records, BR-11, and the reviewer
-guard, BR-16). Any refusal stops it there. A policy change needs an interactive terminal
+guard, BR-16), and each agent's effective provider routing (`routing <agent> ...`, from the installed AGENT.md,
+S8). Any refusal stops it there. A policy change needs an interactive terminal
 (BR-12): with stdin not a TTY it refuses after the preflight with `refused: policy confirmation needs an
 interactive terminal`.
 Apply (after `y`): add the block to the policy working copy (refused when it changed since the preflight), stage
@@ -356,6 +357,8 @@ def preflight_attach(ws, conf, guard):
                       f"{fl.approve_source_command(agent, pending[0]['name'], pending[0]['sha256'])}")
     line("preflight", (f"attach {len(missing)} agents; boundary turns" if missing else "attach ok (instances exist)")
          + f"; reviewer guard ok ({guard.split(' (')[0]})")
+    for routed in fl.installed_routing(fl.team(conf) + [a for a in fl.ON_DEMAND if a not in fl.team(conf)]):
+        line("preflight", routed)
     return missing
 
 

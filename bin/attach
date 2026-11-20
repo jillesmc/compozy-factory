@@ -16,7 +16,9 @@ max_active_instances`, S7). An agent whose source script is not approved is refu
 command; the others still attach.
 Each new instance's main session gets one boundary prompt (workaround for compozy/compozy#1815: a main
 session without a turn is not reopened after a restart): `boundary <agent> ok`. --dry-run runs every
-check and prints `would attach <agent>` without creating or prompting anything.
+check and prints `would attach <agent>` without creating or prompting anything, plus `routing <agent> <provider>/<model>
+→ <fallback chain>` read from each installed AGENT.md (the routing a new instance runs on, BR-R7). A new instance
+loads the installed definition; bin/reload recreates existing ones after bin/install changed the routing.
 """
 import argparse
 import sys
@@ -49,6 +51,8 @@ def main():
     listed = fl.compozy("agent", "instance", "list", "--workspace", ws, "--limit", "100")
     existing = {i["agent_name"] for i in listed.get("instances", []) if i.get("state") != "archived"}
     fl.refuse_capacity(listed, sum(a not in fl.ON_DEMAND and a not in existing for a in agents))
+    if args.dry_run:
+        print("\n".join(fl.installed_routing(agents + [a for a in fl.ON_DEMAND if a not in agents])))
     refused = False
     for agent in agents:
         if agent in fl.ON_DEMAND:

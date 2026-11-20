@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Copy agents/factory-*, tools/ and the bundled adapters into $COMPOZY_HOME (default ~/.compozy).
 
-Usage: bin/install [--dry-run] [--prune]
+Usage: bin/install [--dry-run] [--prune] [--reconfigure-routing]
 
 Writes only $COMPOZY_HOME/agents/factory-*, $COMPOZY_HOME/skills/factory-<role>-<provider>/ and
 $COMPOZY_HOME/factory/. Idempotent: an unchanged file is never rewritten. Prints the approval commands
@@ -13,9 +13,18 @@ factory-reviewer digest read back from the daemon (BR-16): after copying, `compo
 factory-reviewer` is read until it reports a user-level global definition (and, when AGENT.md changed,
 a digest other than the pre-install one), for at most 30 s; otherwise install fails and keeps the
 previous record.
+
+Provider routing is per machine (S8, BR-R1..R5): $XDG_CONFIG_HOME/compozy-factory/routing.toml (default
+~/.config/...), classes work (sentinel, scribe, dispatcher, pr-watcher, gatekeeper), auditor and reviewer,
+optional [agents.<name>] overrides. Without the file (or with --reconfigure-routing) install asks on a terminal,
+per class, among the authenticated providers of `compozy provider list` (reviewer: the sandboxed reviewer
+providers); a class with exactly one candidate uses it with no fallback. No file and no terminal: refused. Every
+routed provider must still be listed (reviewer: sandboxed), else refused with its name. The route is rendered
+into the installed AGENT.md (provider, model, fallback_chain); the repo copies carry none.
 """
 import argparse
 import os
+import shlex
 import shutil
 import sys
 import time
@@ -38,12 +47,17 @@ def wanted(src, skip_tests=False):
     return files
 
 
+def content(src):
+    """(bytes, mode) of a source: a file, or (rendered bytes, file the mode comes from)."""
+    data, path = src if isinstance(src, tuple) else (src.read_bytes(), src)
+    return data, path.stat().st_mode & 0o777
+
+
 def plan(files, dest):
     """Return (writes, removals) needed to make dest mirror files."""
     writes = [rel for rel, src in files.items()
               if not (dest / rel).is_file()
-              or (dest / rel).read_bytes() != src.read_bytes()
-              or (dest / rel).stat().st_mode & 0o777 != src.stat().st_mode & 0o777]
+              or ((dest / rel).read_bytes(), (dest / rel).stat().st_mode & 0o777) != content(src)]
     removals = [p for p in dest.rglob("*") if not p.is_dir() and p.relative_to(dest) not in files] \
         if dest.exists() else []
     return writes, removals
@@ -53,8 +67,9 @@ def apply(files, dest, writes, removals):
     for rel in writes:
         target = dest / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(files[rel].read_bytes())
-        target.chmod(files[rel].stat().st_mode & 0o777)
+        data, mode = content(files[rel])
+        target.write_bytes(data)
+        target.chmod(mode)
     for path in removals:
         path.unlink()
     for path in sorted(dest.rglob("*"), reverse=True):
@@ -71,6 +86,124 @@ def symlinks(paths):
                 if inner.is_symlink():
                     return inner
     return None
+
+
+def provider_candidates():
+    """Class -> providers it may route to, from the daemon's provider list and effective provider config."""
+    listed = [p for p in fl.compozy("provider", "list").get("providers", []) if p.get("enabled")]
+    config = (fl.compozy("config", "get", "providers") or {}).get("value") or {}
+    authenticated = [p["name"] for p in listed if (p.get("auth_status") or {}).get("state") == "authenticated"]
+    # Sandboxed reviewer provider (BR-R5): enabled, and the first word of its effective `providers.<name>.command`
+    # is exactly $COMPOZY_HOME/extensions/github-app-review/bin/reviewer-sandbox, the extension's wrapper that runs
+    # the ACP agent in bubblewrap with no network and egress only through its per-sandbox gateway (the bwrap gateway
+    # overlay). claude-reviewer / claude-reviewer-fallback are configured that way; claude-mm1 starts with
+    # `env ... npx claude-agent-acp` and is not. A wrapper reached through `env`, a shell or another path does not
+    # count: only a direct launch is known to be confined. Their auth state is `unknown` (the sandbox owns its login
+    # copy), so they never appear among the authenticated providers.
+    sandbox = str(fl.compozy_home() / "extensions" / "github-app-review" / "bin" / "reviewer-sandbox")
+    sandboxed = [p["name"] for p in listed if first_word((config.get(p["name"]) or {}).get("command")) == sandbox]
+    return {"work": authenticated, "auditor": authenticated, "reviewer": sandboxed}
+
+
+def first_word(command):
+    try:
+        return (shlex.split(command) or [""])[0] if isinstance(command, str) else ""
+    except ValueError:
+        return ""
+
+
+def ask(prompt):
+    try:
+        return input(prompt).strip()
+    except EOFError:
+        raise fl.Refused("routing: no answer (end of input)") from None
+
+
+def answer(prompt, default, found, many):
+    """[(provider, model)] typed by the operator (empty line: the default)."""
+    while True:
+        raw = ask(prompt)
+        if not raw:
+            return default
+        if many and raw == "-":
+            return []
+        pairs = [part.split() for part in raw.split(",")]
+        if all(len(p) == 2 and p[0] in found for p in pairs) and (many or len(pairs) == 1):
+            return [tuple(p) for p in pairs]
+        print(f"  expected {'comma-separated ' if many else ''}<provider> <model>, provider one of: {', '.join(found)}")
+
+
+def answer_effort(current):
+    """The primary's reasoning effort: empty keeps the current value (S8-C3), `-` clears it."""
+    while True:
+        raw = ask(f"  primary reasoning_effort, - for none [{current or '-'}]: ")
+        if not raw:
+            return current
+        if raw == "-":
+            return None
+        if fl.ROUTE_WORD.fullmatch(raw):
+            return raw
+        print("  expected one word, or - for none")
+
+
+def ask_routing(candidates, old):
+    """BR-R3: per class, primary, its reasoning effort, then fallback; defaults from the current file, else
+    ROUTING_DEFAULTS. Per-agent overrides are kept as they are."""
+    routing = {"agents": (old or {}).get("agents", {})}
+    for name, (model, providers) in fl.ROUTING_DEFAULTS.items():
+        found, kind = candidates[name], "sandboxed reviewer" if name == "reviewer" else "authenticated"
+        current = (old or {}).get(name)
+        effort = current["primary"].get("reasoning_effort") if current else None
+        if not found:
+            raise fl.Refused(f"routing {name}: no {kind} provider in `compozy provider list`")
+        if len(found) == 1:
+            primary = {"provider": found[0], "model": current["primary"]["model"] if current else model}
+            routing[name] = {"primary": {**primary, **({"reasoning_effort": effort} if effort else {})}, "fallback": []}
+            print(f"routing {name}: {found[0]} is the only {kind} provider; using it with no fallback")
+            continue
+        default = ([(current["primary"]["provider"], current["primary"]["model"])]
+                   + [(f["provider"], f["model"]) for f in current["fallback"]]
+                   if current else [(p, model) for p in providers])
+        default = [d for d in default if d[0] in found] or [(found[0], model)]
+        print(f"routing {name} ({', '.join(fl.ROUTING_CLASSES[name])}); {kind} providers: {', '.join(found)}")
+        (primary,) = answer(f"  primary <provider> <model> [{' '.join(default[0])}]: ", default[:1], found, False)
+        effort = answer_effort(effort)
+        shown = ", ".join(" ".join(d) for d in default[1:]) or "-"
+        chain = answer(f"  fallback, comma-separated <provider> <model> or - for none [{shown}]: ",
+                       default[1:], found, True)
+        routing[name] = {"primary": {"provider": primary[0], "model": primary[1],
+                                     **({"reasoning_effort": effort} if effort else {})},
+                         "fallback": [{"provider": p, "model": m} for p, m in chain]}
+    return fl.check_routing(routing)
+
+
+def check_routes(routing, candidates):
+    """BR-R3/BR-R5: every routed provider, primary and fallback, is still known; the reviewer's are all sandboxed."""
+    for agent in fl.AGENTS + fl.ON_DEMAND:
+        name, route = fl.routing_class(agent), fl.agent_route(routing, agent)
+        for provider in [route["primary"]["provider"]] + [f["provider"] for f in route["fallback"]]:
+            if provider in candidates[name]:
+                continue
+            if name == "reviewer":
+                raise fl.Refused(f"routing {agent}: {provider} is not a sandboxed reviewer provider (primary and "
+                                 "every fallback must launch the github-app-review reviewer-sandbox)")
+            raise fl.Refused(f"routing {agent}: provider {provider} is not an authenticated provider in "
+                             "`compozy provider list`")
+
+
+def resolve_routing(reconfigure):
+    """(routing, asked): the file's routing or the operator's answers; refuses before any write."""
+    old = fl.load_routing()  # refuses a symlinked routing.toml or directory first (S8-C4)
+    asking = old is None or reconfigure
+    if asking and not sys.stdin.isatty():
+        raise fl.Refused(fl.NO_ROUTING if old is None else "--reconfigure-routing needs an interactive terminal")
+    try:
+        candidates = provider_candidates()
+    except RuntimeError as exc:
+        raise fl.Refused(f"routing: cannot read the providers from the daemon ({exc})") from None
+    routing = ask_routing(candidates, old) if asking else old
+    check_routes(routing, candidates)
+    return routing, asking
 
 
 def read_back_reviewer(pre, changed):
@@ -106,6 +239,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--dry-run", action="store_true", help="report without writing")
     parser.add_argument("--prune", action="store_true", help="remove installed factory-* agents no longer in the repo")
+    parser.add_argument("--reconfigure-routing", action="store_true", help="ask the provider routing again")
     args = parser.parse_args()
 
     home = fl.compozy_home()
@@ -124,11 +258,16 @@ def main():
         + [path for pair in adapter_dests for path in pair])
     if bad:
         fl.refuse(f"{bad} is a symlink (symlink_not_supported)")
+    routing, asked = resolve_routing(args.reconfigure_routing)
 
     lines, approvals, actions = [], [], []
+    rendered = {}
     for src in repo_agents:
         dest = agents_home / src.name
         files = wanted(src)
+        agent_md = files[Path("AGENT.md")]
+        rendered[src.name] = fl.render_agent(agent_md.read_text(), fl.agent_route(routing, src.name)).encode()
+        files[Path("AGENT.md")] = (rendered[src.name], agent_md)
         writes, removals = plan(files, dest)
         for rel in writes:
             if rel.parts[0] == "sources" and len(rel.parts) == 2:
@@ -164,9 +303,8 @@ def main():
         lines.append(f"{status} adapter {role}-{provider} tree {fl.short(tree)}")
         actions += [(files, dest, writes, removals), (skill, skill_dest, skill_writes, skill_removals)]
 
-    reviewer_src = fl.REPO_ROOT / "agents" / fl.ON_DEMAND[0] / "AGENT.md"
     reviewer_dest = agents_home / fl.ON_DEMAND[0] / "AGENT.md"
-    reviewer_changed = not reviewer_dest.is_file() or reviewer_dest.read_bytes() != reviewer_src.read_bytes()
+    reviewer_changed = not reviewer_dest.is_file() or reviewer_dest.read_bytes() != rendered[fl.ON_DEMAND[0]]
     pre = None
     if not args.dry_run and reviewer_dest.is_file():  # an installed reviewer: its current digest must be known (F-6)
         for _ in range(3):
@@ -183,7 +321,12 @@ def main():
     for path in stale:
         lines.append(f"{'pruned' if args.prune else 'stale'} {path.name}")
 
+    lines = [f"routing {agent} {fl.route_text(fl.agent_route(routing, agent))}"
+             for agent in fl.AGENTS + fl.ON_DEMAND] + lines
     if not args.dry_run:
+        if asked:
+            fl.write_routing(routing)
+            lines.insert(0, f"routing written {fl.routing_path()}")
         for action in actions:
             apply(*action)
         if args.prune:

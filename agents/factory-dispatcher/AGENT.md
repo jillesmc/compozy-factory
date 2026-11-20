@@ -3,8 +3,6 @@ name: factory-dispatcher
 display_name: Factory Dispatcher
 description: Accepts issues released with `factory:deliver`, sizes them, dispatches implementation to an isolated worktree and hands the PR to the PR watcher.
 kind: always_on
-provider: claude-mm4
-model: sonnet
 permissions: approve-all
 appearance:
   version: 1

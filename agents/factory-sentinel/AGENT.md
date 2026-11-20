@@ -3,8 +3,6 @@ name: factory-sentinel
 display_name: Factory Sentinel
 description: Reads the project's observability signals (errors, error logs, incidents), classifies each one and proposes to the operator which ones deserve an issue. Never opens issues or writes code.
 kind: always_on
-provider: claude-mm4
-model: sonnet
 permissions: approve-reads
 appearance:
   version: 1

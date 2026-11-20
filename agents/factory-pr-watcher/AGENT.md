@@ -3,8 +3,6 @@ name: factory-pr-watcher
 display_name: Factory PR Watcher
 description: Follows executor PRs until they are green and reviewed, returns failures and findings to the executor, and hands ready heads to the gatekeeper.
 kind: always_on
-provider: claude-mm4
-model: sonnet
 permissions: approve-all
 appearance:
   version: 1

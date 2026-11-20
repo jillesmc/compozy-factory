@@ -510,12 +510,18 @@ _PROTO = {"constructor", "__proto__", "hasOwnProperty", "isPrototypeOf", "proper
           "toString", "valueOf", "__defineGetter__", "__defineSetter__", "__lookupGetter__", "__lookupSetter__"}
 
 
+def config_dir(env=None):
+    """$XDG_CONFIG_HOME when absolute, else $HOME/.config."""
+    env = os.environ if env is None else env
+    xdg, home = (env.get("XDG_CONFIG_HOME") or "").strip(), (env.get("HOME") or "").strip()
+    return Path(xdg) if xdg and os.path.isabs(xdg) else Path(home if home and os.path.isabs(home)
+                                                             else os.path.expanduser("~")) / ".config"
+
+
 def policy_paths(env=None):
     """(working copy, versions dir) exactly as the extension resolves them."""
     env = os.environ if env is None else env
-    xdg, home = (env.get("XDG_CONFIG_HOME") or "").strip(), (env.get("HOME") or "").strip()
-    config = Path(xdg) if xdg and os.path.isabs(xdg) else Path(home if home and os.path.isabs(home)
-                                                                else os.path.expanduser("~")) / ".config"
+    config = config_dir(env)
     file = (env.get(POLICY_FILE_ENV) or "").strip()
     if file and not os.path.isabs(file):
         raise ValueError(f"{POLICY_FILE_ENV} must be an absolute path")
@@ -798,3 +804,169 @@ def stage_policy(env=None):
     finally:
         tmp.unlink(missing_ok=True)  # like the extension: a stale or failed temp file is removed, nothing staged
     return "staged", digest, path
+
+
+# ------------------------------------------------------------------------------- S8: machine-local provider routing
+# BR-R1: routing classes, each `primary = { provider, model[, reasoning_effort] }` plus an ordered
+# `fallback = [{ provider, model }, …]`; [agents.<name>] in routing.toml overrides one agent with the same shape.
+ROUTING_CLASSES = {"work": AGENTS[:5], "auditor": ["factory-auditor"], "reviewer": ON_DEMAND}
+# BR-R3: the suggested model and provider order per class (primary first), offered when asking.
+ROUTING_DEFAULTS = {"work": ("sonnet", ["claude-mm4", "claude-mm2", "claude-mm1"]),
+                    "auditor": ("sonnet", ["claude", "claude-mm1"]),
+                    "reviewer": ("opus", ["claude-reviewer", "claude-reviewer-fallback"])}
+NO_ROUTING = "no routing file; run bin/install on a terminal"
+ROUTE_WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/\[\]-]*")  # plain identifiers; rendered quoted anyway (S8-C1)
+_PRIMARY_KEYS = ("provider", "model", "reasoning_effort")
+
+
+def routing_path(env=None):
+    return config_dir(env) / "compozy-factory" / "routing.toml"
+
+
+def _words(where, entry, required, optional=()):
+    if not isinstance(entry, dict):
+        raise Refused(f"routing.toml {where} must be a table {{ provider, model }}")
+    extra = sorted(set(entry) - {*required, *optional})
+    if extra:
+        raise Refused(f"routing.toml {where} unknown key {extra[0]}")
+    for key in [*required, *(k for k in optional if k in entry)]:
+        value = entry.get(key)
+        if not (isinstance(value, str) and ROUTE_WORD.fullmatch(value)):
+            raise Refused(f"routing.toml {where} {key} must be one word (got {value!r})")
+
+
+def check_route(where, route):
+    """One class or agent route (BR-R1); refuses a wrong shape or type."""
+    if not isinstance(route, dict):
+        raise Refused(f"routing.toml missing [{where}]")
+    extra = sorted(set(route) - {"primary", "fallback"})
+    if extra:
+        raise Refused(f"routing.toml [{where}] unknown key {extra[0]}")
+    _words(f"[{where}] primary", route.get("primary"), _PRIMARY_KEYS[:2], _PRIMARY_KEYS[2:])
+    fallback = route.setdefault("fallback", [])
+    if not isinstance(fallback, list):
+        raise Refused(f"routing.toml [{where}] fallback must be a list of {{ provider, model }}")
+    for i, entry in enumerate(fallback, 1):
+        _words(f"[{where}] fallback {i}", entry, ("provider", "model"))
+    return route
+
+
+def check_routing(data):
+    unknown = sorted(set(data) - {*ROUTING_CLASSES, "agents"})
+    if unknown:
+        raise Refused(f"routing.toml unknown section [{unknown[0]}]")
+    for name in ROUTING_CLASSES:
+        check_route(name, data.get(name))
+    agents = data.setdefault("agents", {})
+    if not isinstance(agents, dict):
+        raise Refused("routing.toml [agents] must be a table of [agents.<name>]")
+    for name, route in agents.items():
+        if name not in AGENTS + ON_DEMAND:
+            raise Refused(f"routing.toml [agents.{name}] is not a factory agent")
+        check_route(f"agents.{name}", route)
+    return data
+
+
+def refuse_routing_symlink(path=None):
+    """Like install's symlinked-target refusal: neither routing.toml nor its directory may be a symlink (S8-C4)."""
+    path = path or routing_path()
+    bad = next((p for p in (path.parent, path) if p.is_symlink()), None)
+    if bad:
+        raise Refused(f"{bad} is a symlink (symlink_not_supported)")
+
+
+def load_routing(path=None):
+    """The operator's routing (BR-R2), or None when the file is absent."""
+    path = path or routing_path()
+    refuse_routing_symlink(path)
+    if not path.is_file():
+        return None
+    try:
+        return check_routing(tomllib.loads(path.read_text()))
+    except tomllib.TOMLDecodeError as exc:
+        raise Refused(f"{path}: invalid TOML ({exc})") from None
+
+
+def routing_class(agent):
+    return next(name for name, agents in ROUTING_CLASSES.items() if agent in agents)
+
+
+def agent_route(routing, agent):
+    return routing["agents"].get(agent) or routing[routing_class(agent)]
+
+
+def _inline(entry, keys):
+    return "{ " + ", ".join(f"{key} = {json.dumps(entry[key])}" for key in keys if key in entry) + " }"
+
+
+def routing_toml(routing):
+    """Hand-written TOML (stdlib has no writer); values are checked words, so JSON quoting is valid TOML."""
+    out = ["# compozy-factory provider routing for this machine, written by bin/install (no secrets).",
+           "# Re-ask with bin/install --reconfigure-routing; [agents.<name>] overrides one agent.", ""]
+    sections = [(name, routing[name]) for name in ROUTING_CLASSES]
+    sections += [(f"agents.{name}", route) for name, route in sorted(routing.get("agents", {}).items())]
+    for name, route in sections:
+        out += [f"[{name}]", f"primary = {_inline(route['primary'], _PRIMARY_KEYS)}",
+                "fallback = [" + ", ".join(_inline(f, ("provider", "model")) for f in route["fallback"]) + "]", ""]
+    return "\n".join(out)
+
+
+def write_routing(routing, path=None):
+    """BR-R2: a fresh 0600 temp file made exclusively in the same directory, fsynced, then renamed (S8-C4)."""
+    path = path or routing_path()
+    refuse_routing_symlink(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".routing.", suffix=".tmp")  # O_EXCL, mode 0600
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(routing_toml(routing))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def render_agent(text, route):
+    """BR-R4: the installed AGENT.md = the repo one with provider/model/fallback_chain inserted after `kind:`.
+    Every value is a JSON string, which is a YAML double-quoted scalar: `opus:`, `null` or `1e3` stay strings."""
+    head, sep, rest = text.partition("\n---")
+    lines = head.split("\n")
+    if any(line.startswith(tuple(f"{k}:" for k in (*_PRIMARY_KEYS, "fallback_chain"))) for line in lines):
+        raise Refused("repo AGENT.md carries routing keys; routing lives in routing.toml (BR-R4)")
+    at = next(i for i, line in enumerate(lines) if line.startswith("kind:")) + 1
+    primary = route["primary"]
+    routed = [f"{key}: {json.dumps(primary[key])}" for key in _PRIMARY_KEYS if key in primary]
+    if route["fallback"]:
+        routed.append("fallback_chain:")
+        routed += [line for f in route["fallback"] for line in (f"  - provider: {json.dumps(f['provider'])}",
+                                                                 f"    model: {json.dumps(f['model'])}")]
+    return "\n".join(lines[:at] + routed + lines[at:]) + sep + rest
+
+
+def installed_route(text):
+    """The route an installed AGENT.md carries (what a new instance runs on)."""
+    front = text.split("\n---", 1)[0]
+    chain = re.findall(r'^  - provider: ("[^"\n]*")\n    model: ("[^"\n]*")$', front.split("fallback_chain:", 1)[-1],
+                       re.MULTILINE) if "\nfallback_chain:" in front else []
+    primary = {key: frontmatter_field(text, key) for key in _PRIMARY_KEYS}
+    return {"primary": {k: v for k, v in primary.items() if v is not None},
+            "fallback": [{"provider": json.loads(p), "model": json.loads(m)} for p, m in chain]}
+
+
+def route_text(route):
+    primary, chain = route["primary"], ", ".join(f"{f['provider']}/{f['model']}" for f in route["fallback"])
+    effort = f" ({primary['reasoning_effort']})" if primary.get("reasoning_effort") else ""
+    return f"{primary['provider']}/{primary['model']}{effort}" + (f" → {chain}" if chain else " (no fallback)")
+
+
+def installed_routing(agents, home=None):
+    """`routing <agent> <route>` per agent from the installed AGENT.md files (read-only, BR-R7)."""
+    home = home or compozy_home()
+    lines = []
+    for agent in agents:
+        path = home / "agents" / agent / "AGENT.md"
+        lines.append(f"routing {agent} " + (route_text(installed_route(path.read_text())) if path.is_file()
+                                            else "not installed; run bin/install"))
+    return lines

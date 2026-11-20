@@ -6,7 +6,7 @@
 # Starts a throwaway daemon with its own COMPOZY_HOME, HTTP port and socket, runs the real
 # bin/install, bin/attach and bin/migrate-memory against it, checks the gatekeeper's tool allowlist, and stops it on exit. Every CLI call
 # runs under `env -i` so the caller's COMPOZY_* session identity can never reach the operator daemon.
-# Usage: tests/it/run.sh            (KEEP=1 keeps the temp dir for inspection)
+# Usage: tests/it/run.sh            (KEEP=1 keeps the temp dir; IT_SKIP_ACTIVATION=1 skips IT-006, which needs gh and network)
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
@@ -15,7 +15,7 @@ HOME_DIR=$T/home SCRATCH=$T/scratch
 PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
 mkdir -p "$HOME_DIR" "$SCRATCH/.compozy/factory"
 
-iso() { env -i HOME="$HOME" PATH="$PATH" USER="${USER:-}" COMPOZY_HOME="$HOME_DIR" "$@"; }
+iso() { env -i HOME="$HOME" XDG_CONFIG_HOME="$T/xdg" PATH="$PATH" USER="${USER:-}" COMPOZY_HOME="$HOME_DIR" "$@"; }
 cz() { iso compozy "$@"; }
 json() { python3 -c "import json,sys; d=json.load(sys.stdin); $1"; }
 step() { printf '\n## %s\n' "$*"; }
@@ -29,6 +29,8 @@ trap cleanup EXIT
 # Heartbeat wakes are off so no check-in turn ever runs. The agents' providers (`claude-mm4`, and
 # `claude` for the auditor) run tests/it/fake-acp: instances can be created and the boundary prompt of
 # bin/attach gets its turn, but no real provider (no model, no operator credential) is ever launched.
+. "$REPO/tests/it/routing.sh"
+it_routing "$T/xdg"  # S8: bin/install reads routing only from this throwaway XDG_CONFIG_HOME
 cat > "$HOME_DIR/config.toml" <<EOF
 [http]
 host = "127.0.0.1"
@@ -43,19 +45,7 @@ enabled = false
 [agents.always_on]
 max_active_instances = 50   # scratch, setupws and the migrated workspace each attach six
 
-[providers.claude-mm4]
-display_name = "Claude (mm4, IT stub)"
-harness = "acp"
-command = "$REPO/tests/it/fake-acp"
-runtime_provider = "claude"
-auth_mode = "native_cli"
-
-[providers.claude]
-display_name = "Claude (IT stub)"
-harness = "acp"
-command = "$REPO/tests/it/fake-acp"
-runtime_provider = "claude"
-auth_mode = "native_cli"
+$(it_providers "$HOME_DIR")
 
 [tools.policy]
 trusted_sources = ["extension:github-app-review"]
@@ -463,6 +453,11 @@ grep -q '^reviewer factory-reviewer origin global layer user' "$T/reload.out"
 grep -q '^boundary factory-scribe ok$' "$T/reload.out"
 
 step "factory-roles IT-006 activation runbook (tests/it/activation.sh: its own isolated daemon)"
+if [ "${IT_SKIP_ACTIVATION:-}" = 1 ]; then  # it downloads the released extensions with gh (network, operator login)
+  echo "IT_SKIP_ACTIVATION=1: tests/it/activation.sh not run"
+  step "IT-001..IT-004, IT-007..IT-009 (factory-user-agents/factory-roles), factory-roles IT-001 and IT-004 passed; IT-006 NOT run"
+  exit 0
+fi
 KEEP="${KEEP:-}" "$REPO/tests/it/activation.sh"
 
 step "IT-001..IT-004, IT-007..IT-009 (factory-user-agents/factory-roles), factory-roles IT-001, IT-004 and IT-006 passed"

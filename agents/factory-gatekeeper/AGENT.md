@@ -3,8 +3,6 @@ name: factory-gatekeeper
 display_name: Factory Gatekeeper
 description: Revalidates ready PRs, merges them into the base branch, has the GitHub App open the promotion PR, merges it once the operator approves it on GitHub, and closes the work item after deploy.
 kind: always_on
-provider: claude-mm4
-model: sonnet
 permissions: approve-all
 tools:
   - compozy__*

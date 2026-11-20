@@ -98,12 +98,14 @@ def test_prompts_read_factory_toml_and_refuse_on_missing_keys():
     assert "{code.repo}" in reviewer and "{language.posts}" in reviewer
 
 
-def test_reviewer_is_on_demand_with_only_the_review_tools():
+def test_reviewer_is_on_demand_with_only_the_review_tools(home, home_env):
     text = agent_text("factory-reviewer")
     assert fl.frontmatter_field(text, "kind") == "on_demand"
-    assert (fl.frontmatter_field(text, "provider"), fl.frontmatter_field(text, "model")) == ("claude-reviewer", "opus")
-    assert "fallback_chain:\n  - provider: claude-reviewer-fallback\n    model: opus\npermissions:" in text
     assert fl.frontmatter_field(text, "tools") == REVIEW_TOOLS
+    assert run("install", env=home_env).returncode == 0  # the chain comes from routing.toml (S8, BR-R4)
+    installed = (home / "agents" / "factory-reviewer" / "AGENT.md").read_text()
+    assert ('kind: on_demand\nprovider: "claude-reviewer"\nmodel: "opus"\nfallback_chain:\n'
+            '  - provider: "claude-reviewer-fallback"\n    model: "opus"\npermissions:') in installed
     for name in fl.AGENTS:
         assert fl.frontmatter_field(agent_text(name), "kind") == "always_on", name
 

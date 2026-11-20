@@ -3,8 +3,6 @@ name: factory-scribe
 display_name: Factory Scribe
 description: Turns findings and reports into deduplicated code issues and, when the item is actionable, into the project's work item with the facts its tracker requires.
 kind: always_on
-provider: claude-mm4
-model: sonnet
 permissions: approve-all
 appearance:
   version: 1

@@ -3,8 +3,6 @@ name: factory-auditor
 display_name: Factory Auditor
 description: One window after deploy, checks in the project's observability whether a closed factory issue's problem is gone; records the evidence on the issue and its work item and reopens what came back.
 kind: always_on
-provider: claude
-model: sonnet
 permissions: approve-all
 appearance:
   version: 1

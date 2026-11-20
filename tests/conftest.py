@@ -18,6 +18,24 @@ sys.dont_write_bytecode = True  # adapter trees refuse compiled Python (F-3); im
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "bin"))
 NEWRELIC_TOML = 'app = "acme-api-prod"\naccount_id = 1234567\n'
+ACP = "env -u ARGV0 CLAUDE_CONFIG_DIR=/x mise exec node@lts -- npx -y @agentclientprotocol/claude-agent-acp@latest"
+PROVIDERS = {"claude": "authenticated", "claude-mm1": "authenticated", "claude-mm2": "authenticated",
+             "claude-mm4": "authenticated", "claude-reviewer": "unknown", "claude-reviewer-fallback": "unknown"}
+PROVIDER_CONFIG = {**{name: ACP for name in PROVIDERS},
+                   "claude-reviewer": "{sandbox} --provider claude --login-dir /x --worktree-root /w",
+                   "claude-reviewer-fallback": "{sandbox} --provider claude --login-dir /y --worktree-root /w"}
+ROUTING = """[work]
+primary = { provider = "claude-mm4", model = "sonnet" }
+fallback = [{ provider = "claude-mm2", model = "sonnet" }, { provider = "claude-mm1", model = "sonnet" }]
+
+[auditor]
+primary = { provider = "claude", model = "sonnet" }
+fallback = [{ provider = "claude-mm1", model = "sonnet" }]
+
+[reviewer]
+primary = { provider = "claude-reviewer", model = "opus" }
+fallback = [{ provider = "claude-reviewer-fallback", model = "opus" }]
+"""
 NO_COMPOZY = Path(tempfile.mkdtemp(prefix="no-compozy-"))
 (NO_COMPOZY / "compozy").write_text("#!/bin/sh\necho 'no compozy in unit tests' >&2\nexit 1\n")
 (NO_COMPOZY / "compozy").chmod(0o755)
@@ -94,6 +112,13 @@ if cmd == ["agent", "info", "factory-reviewer"]:
         print(json.dumps(info), file=sys.stderr)
         sys.exit(1)
     out(info)
+if args[:2] == ["provider", "list"]:
+    out({"providers": [{"name": name, "enabled": True, "auth_status": {"state": st}}
+                       for name, st in state["providers"].items()]})
+if args[:3] == ["config", "get", "providers"]:  # the reviewer overlays launch the extension's sandbox wrapper
+    sandbox = os.path.join(os.environ["COMPOZY_HOME"], "extensions", "github-app-review", "bin", "reviewer-sandbox")
+    out({"path": "providers", "value": {name: {"command": cmd.replace("{sandbox}", sandbox)}
+                                        for name, cmd in state["provider_config"].items()}})
 if args[:2] == ["skill", "info"]:
     if state.get("skill_info_error"):  # e.g. the CLI's refusal inside a managed session
         print(state["skill_info_error"], file=sys.stderr)
@@ -178,7 +203,7 @@ class FakeCompozy:
         self.state_path, self.log_path = tmp_path / "state.json", tmp_path / "calls.jsonl"
         self.log_path.write_text("")
         self.state = {"root": "", "instances": [], "scripts": {}, "memory": {}, "skills": {},
-                      "agent_info": None,
+                      "agent_info": None, "providers": dict(PROVIDERS), "provider_config": dict(PROVIDER_CONFIG),
                       "policy": {"secret": None, "running": None}}
         self.save()
 
@@ -194,8 +219,14 @@ class FakeCompozy:
         return [json.loads(line) for line in self.log_path.read_text().splitlines()]
 
     def env(self):
+        """Fake compozy first on PATH and an XDG_CONFIG_HOME holding today's routing (S8)."""
+        routing = self.dir.parent / "xdg" / "compozy-factory" / "routing.toml"
+        if not routing.parent.is_dir():
+            routing.parent.mkdir(parents=True)
+            routing.write_text(ROUTING)
         return {"PATH": f"{self.dir}{os.pathsep}{os.environ['PATH']}", "FACTORY_READBACK_TIMEOUT": "2",
-                "FAKE_COMPOZY_STATE": str(self.state_path), "FAKE_COMPOZY_LOG": str(self.log_path)}
+                "FAKE_COMPOZY_STATE": str(self.state_path), "FAKE_COMPOZY_LOG": str(self.log_path),
+                "XDG_CONFIG_HOME": str(routing.parent.parent)}
 
 
 @pytest.fixture

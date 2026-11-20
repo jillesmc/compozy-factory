@@ -120,6 +120,7 @@ def test_ut_025_fresh_project_writes_files_creates_labels_and_attaches(fake, env
     assert (project / ".compozy/factory/factory.toml").read_bytes() == (REPO / "factory.example.toml").read_bytes()
     assert (project / ".compozy/newrelic.toml").read_text() == 'app = "acme-api-prod"\naccount_id = 1234567\n'
     assert (project / "REVIEW.md").read_text().startswith("# Review conventions")
+    assert "preflight  routing factory-auditor claude/sonnet → claude-mm1/sonnet" in proc.stdout.splitlines()  # S8
     fl.load_factory_toml(project)
     assert [c[2] for c in gh_calls(env) if c[:2] == ["label", "create"]] == [
         "factory", "factory:deliver", "factory:in-progress", "factory:blocked"]
