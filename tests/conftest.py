@@ -40,12 +40,16 @@ fail = state.get("fail", {})  # "<first two args>": count of calls that fail (bi
 if fail.get(" ".join(args[:2]), 0) > 0:
     fail[" ".join(args[:2])] -= 1
     json.dump(state, open(state_path, "w"))
+    for warning in state.get("warnings", []):  # the CLI's config deprecation warnings come first on stderr
+        print(warning, file=sys.stderr)
     print(json.dumps({"error": "fake: injected failure " + " ".join(args[:2])}), file=sys.stderr)
     sys.exit(1)
 if args[:2] == ["workspace", "info"]:
     out({"workspace": {"root_dir": state["root"]}})
 if cmd == ["agent", "instance", "list"]:
-    out({"instances": state["instances"]})
+    active = sum(i.get("state") == "active" for i in state["instances"])  # daemon-wide: + other workspaces
+    out({"instances": state["instances"], "active_count": active + state.get("active_elsewhere", 0),
+         "max_active_instances": state.get("max_active_instances", 16)})
 if cmd == ["agent", "instance", "create"]:
     inst = {"id": f"ainst-{args[3]}", "agent_name": args[3], "state": "active",
             "main_session_id": f"sess-{args[3]}", "provider": "claude-mm4"}

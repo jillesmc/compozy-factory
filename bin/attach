@@ -10,8 +10,10 @@ Then, before creating anything: every configured (role, provider) must resolve t
 installed tree (BR-11; --allow-unsupported-adapter attaches anyway with a warning), and
 factory-reviewer must pass `factory_guard.py reviewer` (BR-16). Agents come from
 factory.toml [team] agents (default: all six) unless --agents narrows them. On-demand agents
-(factory-reviewer) are never attached: they are reported `skipped <agent> (on-demand)`. An agent whose
-source script is not approved is refused with the approve command; the others still attach.
+(factory-reviewer) are never attached: they are reported `skipped <agent> (on-demand)`. Refused up front
+when the agents it would create pass the daemon's always-on limit (`active_count + new >
+max_active_instances`, S7). An agent whose source script is not approved is refused with the approve
+command; the others still attach.
 Each new instance's main session gets one boundary prompt (workaround for compozy/compozy#1815: a main
 session without a turn is not reopened after a restart): `boundary <agent> ok`. --dry-run runs every
 check and prints `would attach <agent>` without creating or prompting anything.
@@ -46,6 +48,7 @@ def main():
 
     listed = fl.compozy("agent", "instance", "list", "--workspace", ws, "--limit", "100")
     existing = {i["agent_name"] for i in listed.get("instances", []) if i.get("state") != "archived"}
+    fl.refuse_capacity(listed, sum(a not in fl.ON_DEMAND and a not in existing for a in agents))
     refused = False
     for agent in agents:
         if agent in fl.ON_DEMAND:

@@ -151,11 +151,28 @@ def resolve(root, role, provider, conf, home=None):
     return f"factory-{name}", installed
 
 
+def key_format(adapter):
+    """The work adapter's frontmatter `key_format` ({regex, title_prefix, ...}, contracts/work.md), or None."""
+    match = re.search(r"^key_format: (.*)$", (Path(adapter) / "SKILL.md").read_text().split("\n---", 1)[0], re.M)
+    return json.loads(match.group(1)) if match else None
+
+
+def cli_error(proc):
+    """A failed CLI call's real error: stderr without the CLI's `warning: ` lines (config deprecations bury it,
+    S7), else stdout; the tail, where the error is. When only warning lines remain, their last lines (F7-3)."""
+    for stream in (proc.stderr or "", proc.stdout or ""):
+        text = "\n".join(line for line in stream.strip().splitlines() if not line.startswith("warning: "))
+        if text.strip():
+            return text.strip()[-500:]
+    raw = (proc.stderr or "").strip() or (proc.stdout or "").strip()  # only warnings: one of them is the error
+    return "\n".join(raw.splitlines()[-5:])[-500:] if raw else f"exit {proc.returncode}"
+
+
 def compozy(*args):
     """Run the CompozyOS CLI and return parsed JSON (or None for empty output); raises on failure."""
     proc = subprocess.run(["compozy", *args, "-o", "json"], capture_output=True, text=True)
     if proc.returncode != 0:
-        raise RuntimeError(f"compozy {' '.join(args)}: {(proc.stderr or proc.stdout).strip()[:500]}")
+        raise RuntimeError(f"compozy {' '.join(args)}: {cli_error(proc)}")
     return json.loads(proc.stdout) if proc.stdout.strip() else None
 
 
@@ -207,7 +224,7 @@ def gh_json(*args):
     env = {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")}  # keyring login
     proc = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=60, env=env)
     if proc.returncode != 0:
-        raise RuntimeError(f"gh {' '.join(args[:3])}: {proc.stderr.strip()[:300]}")
+        raise RuntimeError(f"gh {' '.join(args[:3])}: {cli_error(proc)}")
     return json.loads(proc.stdout)
 
 

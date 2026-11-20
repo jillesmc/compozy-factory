@@ -54,7 +54,7 @@ def main():
                                "--expected-digest", target["digest"], "-o", "json"],
                               input=body, capture_output=True, text=True)
         if proc.returncode != 0:
-            raise RuntimeError(f"memory write {new}: {(proc.stderr or proc.stdout).strip()[:500]}")
+            raise RuntimeError(f"memory write {new}: {fl.cli_error(proc)}")
         print(f"migrated {old} -> {new} ({len(source.rstrip(chr(10)).splitlines())} lines)")
 
 

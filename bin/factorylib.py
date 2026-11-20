@@ -12,8 +12,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "tools"))
-from factory_guard import (ROLES, Refused, adapter_path, bindings, check_skill, compozy,  # noqa: E402,F401
-                           compozy_home, named_skill, reviewer,
+from factory_guard import (ROLES, Refused, adapter_path, bindings, check_skill, cli_error, compozy,  # noqa: E402,F401
+                           compozy_home, key_format, named_skill, reviewer,
                            custom_configured, file_sha256, find_binding, installed_record, resolve,
                            short, tree_digest, tree_files, workspace_root, write_json)
 from factory_deploy import check_paths, split_globs  # noqa: E402  (the one trigger-set matcher)
@@ -374,12 +374,69 @@ def team(conf):
 
 # ---------------------------------------------------------------- project files as a reviewed PR
 
+def refuse_capacity(listed, new):
+    """S7: refuse when creating `new` always-on instances would pass the daemon's limit. `listed` is an
+    `agent instance list` result; its active_count is daemon-wide (every workspace)."""
+    active, limit = listed.get("active_count"), listed.get("max_active_instances")
+    if new and isinstance(active, int) and isinstance(limit, int) and active + new > limit:
+        refuse(f"always-on capacity: {active} active + {new} new > {limit} (agents.always_on.max_active_instances); "
+               "raise it, then re-run")
+
+
 def run(*args, cwd=None, check=True):
     env = {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")}  # keyring login for gh
     proc = subprocess.run(list(args), cwd=cwd, capture_output=True, text=True, env=env)
     if check and proc.returncode != 0:
-        raise RuntimeError(f"{' '.join(args[:3])}: {(proc.stderr or proc.stdout).strip()[:400]}")
+        raise RuntimeError(f"{' '.join(args[:3])}: {cli_error(proc)}")
     return proc
+
+
+def _ignore_hits(root, queries, *view):
+    """(rel, source file:line, pattern) for each {path: rel} query an ignore rule excludes; a negation
+    (`!pattern`) as the last match means not ignored (F7-1). `view` adds --git-dir/--work-tree for another tree."""
+    proc = run("git", *view, "check-ignore", "-v", "--no-index", "--", *queries, cwd=str(root), check=False)
+    if proc.returncode not in (0, 1):
+        raise RuntimeError(f"git check-ignore: {cli_error(proc)}")
+    for hit in proc.stdout.splitlines():
+        source, path = hit.split("\t", 1)
+        where, pattern = re.match(r"(.*:\d+):(.*)", source).groups()
+        if not pattern.startswith("!"):
+            yield queries[path], where, pattern
+
+
+def refuse_ignored(root, base, rels, checkout=True):
+    """Read-only, no fetch: refuse when `git add` would refuse one of `rels` because an ignore rule excludes it, in
+    the PR worktree from origin/<base> (its committed .gitignore files on each path, plus .git/info/exclude and
+    core.excludesFile; F7-4) and, with `checkout`, in the checkout too (setup stages the files there). For a file
+    origin/<base> already tracks only its directory counts: ignore rules skip tracked files, not ignored dirs."""
+    queries = {}
+    for rel in rels:
+        tracked = run("git", "-C", str(root), "cat-file", "-e", f"origin/{base}:{rel}", check=False).returncode == 0
+        parent = str(Path(rel).parent)
+        if not tracked:
+            queries[rel] = rel
+        elif parent != ".":
+            queries[parent + "/"] = rel
+    if not queries:
+        return
+    hits = list(_ignore_hits(root, queries)) if checkout else []
+    git_dir = run("git", "-C", str(root), "rev-parse", "--absolute-git-dir").stdout.strip()
+    real = str(Path(root).resolve()) + os.sep
+    with tempfile.TemporaryDirectory() as view:  # the base tree's .gitignore files only, in an empty work tree
+        for d in sorted({str(d) for rel in rels for d in Path(rel).parents}):
+            ignore = ".gitignore" if d == "." else f"{d}/.gitignore"
+            shown = run("git", "-C", str(root), "show", f"origin/{base}:{ignore}", check=False)
+            if shown.returncode == 0:
+                (Path(view) / ignore).parent.mkdir(parents=True, exist_ok=True)
+                (Path(view) / ignore).write_text(shown.stdout)
+        for rel, where, pattern in _ignore_hits(view, queries, f"--git-dir={git_dir}", f"--work-tree={view}"):
+            if not os.path.isabs(where):
+                where = f"origin/{base}:{where}"
+            elif where.startswith(real):
+                where = where[len(real):]
+            hits.append((rel, where, pattern))
+    for rel, where, pattern in hits:
+        refuse(f"{rel} is ignored by {where} ({pattern}) — narrow that rule, then re-run")
 
 
 def _remote_branch_files(root, branch, rels):
@@ -646,6 +703,41 @@ def ask_approvers(repo):
 
 NO_DEPLOY_PATHS = ("deploy paths absent: every train waits for a Deployment (add [roles.deploy] paths in a PR to "
                    "close trains that trigger no pipeline at their merge)")
+
+
+NO_WORK_KEY = "no work key in the PR title: some repos require one (pass --work-key <KEY>)"
+
+
+def work_key(conf, key, tty, root):
+    """The PR's work key: --work-key, else asked on a terminal (empty: none). It must match the work adapter's
+    `key_format.regex`, read from the resolved installed adapter (custom or overridden adapters define it, BR-5),
+    else from the bundled adapter; a key with whitespace is always refused (F7-2)."""
+    if key is None and tty:
+        try:
+            key = input("work key   for the PR title (e.g. PROJ-123 or #123; empty: none): ")
+        except EOFError:
+            key = None
+    key = (key or "").strip()
+    if not key:
+        return None
+    if re.search(r"\s", key):
+        refuse(f"work key {key!r} contains whitespace; fix --work-key, then re-run")
+    provider = conf.get("roles", {}).get("work", {}).get("provider")
+    try:
+        found = key_format(resolve(root, "work", provider, conf)[1])
+    except Refused:  # not installed yet (migrate-config runs before bin/install): the bundled adapter decides
+        found = None
+    bundled = REPO_ROOT / "skills" / f"factory-work-{provider}"
+    regex = (found or {}).get("regex") or ((key_format(bundled) or {}).get("regex") if bundled.is_dir() else None)
+    if regex and not re.search(regex, key):
+        refuse(f"work key {key!r} does not match the work/{provider} adapter's key_format {regex}; fix --work-key, "
+               "then re-run")
+    return key
+
+
+def pr_title(title, key):
+    """`chore: <KEY> <text>` when a work key is given (the org's PR title checks), else the title as is."""
+    return title.replace("chore: ", f"chore: {key} ", 1) if key else title
 
 
 def ask_deploy_paths():

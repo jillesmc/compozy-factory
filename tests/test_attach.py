@@ -223,3 +223,75 @@ def test_attach_and_reload_never_create_the_on_demand_reviewer(fake, workspace, 
     assert (proc.returncode, proc.stdout.strip()) == (0, "skipped factory-reviewer (on-demand)")
     touched = [c[3] for c in fake.calls if c[:2] == ["agent", "instance"] and len(c) > 3 and c[2] != "list"]
     assert touched == fl.AGENTS
+
+
+WARNINGS = [f"warning: window_manager.option_{n} is retired and ignored; remove it before v0.8.0." for n in range(9)]
+
+
+def capacity(fake, existing, elsewhere, limit):
+    fake.load()
+    fake.state["instances"] = [{"id": f"ainst-{a}", "agent_name": a, "state": "active"} for a in existing]
+    fake.state["active_elsewhere"], fake.state["max_active_instances"] = elsewhere, limit
+    fake.save()
+
+
+def test_s7_attach_refuses_over_always_on_capacity_before_creating_anything(fake, workspace, installed):
+    capacity(fake, [], 6, 10)
+    for extra in ((), ("--dry-run",)):
+        proc = attach(workspace, installed, *extra)
+        assert (proc.returncode, proc.stdout.splitlines()[-1]) == (1, (
+            "refused: always-on capacity: 6 active + 6 new > 10 (agents.always_on.max_active_instances); "
+            "raise it, then re-run")), proc.stdout + proc.stderr
+        assert created(fake) == [] and not [c for c in fake.calls if c[:2] == ["session", "prompt"]]
+
+
+def test_s7_attach_rerun_counts_only_the_missing_agents(fake, workspace, installed):
+    capacity(fake, fl.AGENTS[:4], 6, 11)  # 4 attached here + 6 elsewhere; 2 missing
+    proc = attach(workspace, installed)
+    assert proc.stdout.splitlines()[-1] == ("refused: always-on capacity: 10 active + 2 new > 11 "
+                                            "(agents.always_on.max_active_instances); raise it, then re-run")
+    assert created(fake) == []
+    capacity(fake, fl.AGENTS[:4], 6, 12)
+    proc = attach(workspace, installed)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert created(fake) == fl.AGENTS[4:]
+
+
+def test_s7_a_failed_cli_call_prints_the_real_error_past_the_config_warnings(fake, workspace, installed):
+    fake.load()
+    fake.state["warnings"], fake.state["fail"] = WARNINGS, {"agent heartbeat": 1}
+    fake.save()
+    proc = attach(workspace, installed)
+    assert proc.returncode == 1
+    assert "fake: injected failure agent heartbeat" in proc.stderr, proc.stderr
+    assert "warning:" not in proc.stderr
+
+
+def test_s7_cli_error_drops_warning_lines_and_falls_back_to_stdout():
+    import subprocess
+    proc = subprocess.CompletedProcess([], 1, stdout="", stderr="\n".join(WARNINGS + ["Error: max_active_instances"]))
+    assert fl.cli_error(proc) == "Error: max_active_instances"
+    assert fl.cli_error(subprocess.CompletedProcess([], 1, stdout="boom\n", stderr="\n".join(WARNINGS))) == "boom"
+
+
+def test_f7_3_cli_error_keeps_a_warning_prefixed_failure():
+    import subprocess
+    proc = subprocess.CompletedProcess([], 1, stdout="", stderr="warning: unable to access repository: Permission denied\n")
+    assert fl.cli_error(proc) == "warning: unable to access repository: Permission denied"
+    assert fl.cli_error(subprocess.CompletedProcess([], 1, stdout="", stderr="")) == "exit 1"
+
+
+def test_f7_5_capacity_never_counts_the_on_demand_reviewer(fake, workspace, installed):
+    toml = workspace / ".compozy" / "factory" / "factory.toml"
+    toml.write_text(toml.read_text().replace('"factory-auditor"]', '"factory-auditor", "factory-reviewer"]', 1))
+    capacity(fake, [], 4, 10)  # 4 + the six always-on agents fits exactly; counting the reviewer would refuse
+    proc = attach(workspace, installed)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert created(fake) == fl.AGENTS
+
+
+def test_f7_5_capacity_counts_only_the_agents_selected_with_agents(fake, workspace, installed):
+    capacity(fake, [], 9, 10)  # one slot: --agents with one agent fits, the whole team would not
+    proc = attach(workspace, installed, "--agents", "factory-scribe")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert created(fake) == ["factory-scribe"]

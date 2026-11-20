@@ -61,8 +61,10 @@ def pushed(root, env, rel):
     return git("show", f"origin/factory/migrate-roles:{rel}", cwd=root, env=env)
 
 
-def migrate(root, env, answer="octocat, hubot\n\n"):  # approvers, deploy paths (none)
-    return run_tty("migrate-config", str(root), env=env, answer=answer)
+def migrate(root, env, answer="octocat, hubot\n\n", work_key=""):  # approvers, deploy paths (none)
+    """work_key None: no --work-key, so the terminal is asked for it (the next answer line)."""
+    return run_tty("migrate-config", str(root), *(() if work_key is None else ("--work-key", work_key)), env=env,
+                   answer=answer)
 
 
 def gh_calls(env):
@@ -391,3 +393,77 @@ def test_fix6_migrate_notes_absent_deploy_paths(proj):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert fl.NO_DEPLOY_PATHS in proc.stdout
     assert "paths" not in tomllib.loads(pushed(root, env, TOML))["roles"]["deploy"]
+
+
+def test_s7_a_git_ignored_new_file_refuses_before_any_write(proj):
+    """S7: a rule on the new newrelic.toml refuses; the tracked factory.toml is exempt from file rules."""
+    root, env = proj
+    exclude = root / ".git/info/exclude"
+    lineno = len(exclude.read_text().splitlines()) + 1
+    exclude.write_text(exclude.read_text() + "*.toml\n")
+    proc = migrate(root, env)
+    assert (proc.returncode, proc.stdout.strip().splitlines()[-1]) == (
+        1, f"refused: {NR} is ignored by .git/info/exclude:{lineno} (*.toml) — narrow that rule, then re-run")
+    no_trace(root, env)
+
+
+def test_f7_a_tracked_file_in_an_ignored_directory_refuses(proj):
+    """`git add` refuses a tracked file whose directory an ignore rule excludes (`.compozy/`)."""
+    root, env = proj
+    exclude = root / ".git/info/exclude"
+    lineno = len(exclude.read_text().splitlines()) + 1
+    exclude.write_text(exclude.read_text() + ".compozy/\n")
+    proc = migrate(root, env)
+    assert (proc.returncode, proc.stdout.strip().splitlines()[-1]) == (
+        1, f"refused: {TOML} is ignored by .git/info/exclude:{lineno} (.compozy/) — narrow that rule, then re-run")
+    no_trace(root, env)
+
+
+def test_s7_work_key_asked_on_the_terminal_goes_into_the_pr_title(proj):
+    root, env = proj
+    proc = migrate(root, env, "octocat\n\nOTHER-18085\n", work_key=None)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    title = "chore: OTHER-18085 migrate factory.toml to the role grammar"
+    assert f"pr         title: {title} (an already open PR keeps its title)" in proc.stdout
+    assert fl.NO_WORK_KEY not in proc.stdout
+    assert gh_calls(env)[1].startswith(f"pr create --repo acme/acme-api --base develop --head factory/migrate-roles "
+                                       f"--title {title} --body ")
+
+
+def test_s7_migrate_without_a_work_key_notes_it(proj):
+    root, env = proj
+    proc = migrate(root, env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert fl.NO_WORK_KEY in proc.stdout
+
+
+def test_s7_migrate_refuses_a_malformed_work_key_before_any_write(proj):
+    root, env = proj
+    proc = migrate(root, env, work_key="#12")
+    assert (proc.returncode, proc.stdout.strip().splitlines()[-1]) == (
+        1, "refused: work key '#12' does not match the work/jira adapter's key_format ^[A-Z][A-Z0-9]+-\\d+$; "
+           "fix --work-key, then re-run")
+    no_trace(root, env)
+
+
+def test_f7_4_migrate_reads_the_base_trees_ignore_rules_not_the_checkouts(proj):
+    """migrate-config writes only in the PR worktree from origin/develop: its committed .gitignore decides."""
+    root, env = proj
+    (root / ".gitignore").write_text(".compozy/newrelic.toml\n")
+    git("add", ".gitignore", cwd=root, env=env)
+    git("commit", "--quiet", "-m", "ignore", cwd=root, env=env)
+    git("push", "--quiet", "origin", "HEAD:develop", cwd=root, env=env)
+    (root / ".gitignore").write_text("")  # the checkout dropped the rule (unstaged)
+    proc = migrate(root, env)
+    assert (proc.returncode, proc.stdout.strip().splitlines()[-1]) == (1, (
+        f"refused: {NR} is ignored by origin/develop:.gitignore:1 (.compozy/newrelic.toml) — narrow that rule, "
+        "then re-run"))
+    assert gh_calls(env) == []
+
+
+def test_f7_1_migrate_allows_a_negated_rule(proj):
+    root, env = proj
+    exclude = root / ".git/info/exclude"
+    exclude.write_text(exclude.read_text() + "*.toml\n!.compozy/newrelic.toml\n")
+    proc = migrate(root, env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr

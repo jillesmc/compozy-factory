@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Onboard a project with one command: preflight every change, then apply it after confirmation (US-011, BR-19).
 
-Usage: bin/setup <workspace> [--from <factory.toml>] [--allow-unsupported-adapter]
+Usage: bin/setup <workspace> [--from <factory.toml>] [--work-key <KEY>] [--allow-unsupported-adapter]
 
 Preflight (read-only: no file write, no GitHub call before the label check, no CompozyOS mutation) prints every
 change: the extensions, the project files it writes (`.compozy/factory/factory.toml` from --from when missing,
@@ -10,9 +10,12 @@ change: the extensions, the project files it writes (`.compozy/factory/factory.t
 `{}` and `[]`; an empty includes ends the list; none: absent, so every train waits for a Deployment); protected
 paths are marked `(protected path)`, BR-18), the deploy trigger sets (or the note that they are absent), the
 labels, the github-app-review policy block and the active policy digest change, the PR preconditions (checkout on
-the delivery base, empty index, origin, files absent on origin/<base>, factory/setup absent or identical;
-read-only, no fetch), and the agents bin/attach creates (adapters verified against their conformance records,
-BR-11, and the reviewer guard, BR-16). Any refusal stops it there. A policy change needs an interactive terminal
+the delivery base, empty index, origin, files absent on origin/<base> and not git-ignored (S7: names the
+rule), factory/setup absent or identical; read-only, no fetch), the exact PR title (`chore: <KEY> ...` with the
+work key from --work-key or asked on a terminal, checked against the work adapter's key shape: Jira `PROJ-123`,
+GitHub `#123`; without one, a note that some repos require it; an already open PR keeps its title), and the agents bin/attach creates (within the
+daemon's always-on limit, S7; adapters verified against their conformance records, BR-11, and the reviewer
+guard, BR-16). Any refusal stops it there. A policy change needs an interactive terminal
 (BR-12): with stdin not a TTY it refuses after the preflight with `refused: policy confirmation needs an
 interactive terminal`.
 Apply (after `y`): add the block to the policy working copy (refused when it changed since the preflight), stage
@@ -80,14 +83,14 @@ def cz(*args, stdin=None):
     """A CompozyOS CLI mutation (no JSON output expected); raises RuntimeError on failure."""
     proc = subprocess.run(["compozy", *args], capture_output=True, text=True, input=stdin)
     if proc.returncode != 0:
-        raise RuntimeError(f"compozy {' '.join(args[:4])}: {(proc.stderr or proc.stdout).strip()[:300]}")
+        raise RuntimeError(f"compozy {' '.join(args[:4])}: {fl.cli_error(proc)}")
 
 
 def gh(*args):
     env = {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")}  # keyring login
     proc = subprocess.run(["gh", *args], capture_output=True, text=True, env=env, timeout=60)
     if proc.returncode != 0:
-        raise RuntimeError(f"gh {' '.join(args[:3])}: {proc.stderr.strip()[:300]}")
+        raise RuntimeError(f"gh {' '.join(args[:3])}: {fl.cli_error(proc)}")
     return proc.stdout
 
 
@@ -158,7 +161,7 @@ def preflight_files(root, source, tty):
     if source:
         text = Path(source).expanduser().read_text()
         if toml.is_file() and toml.read_text() != text:
-            fl.refuse(f"{REL_TOML} exists and differs from {source}; setup never rewrites it (change it in a PR)")
+            fl.refuse(f"{REL_TOML} exists and differs from --from {source}; re-run without --from to keep it")
         if not toml.is_file():
             writes[REL_TOML] = text
     elif not toml.is_file():
@@ -276,7 +279,7 @@ def git_out(root, *args):
     return proc.stdout.strip() if proc.returncode == 0 else None
 
 
-def preflight_publish(root, conf, writes, refusing):
+def preflight_publish(root, conf, writes, refusing, title):
     """S6-8/S6-9: what the PR and the staging need, read-only (no fetch), so a refusal comes before the switch."""
     base = conf["roles"]["code"]["github"]["base"]
     if git_out(root, "rev-parse", "--is-inside-work-tree") != "true":
@@ -296,6 +299,10 @@ def preflight_publish(root, conf, writes, refusing):
         if git_out(root, "cat-file", "-e", f"origin/{base}:{rel}") is not None:
             fl.refuse(f"{rel} exists on origin/{base} but not in the checkout; update the checkout (git pull), "
                       "then re-run")
+    fl.refuse_ignored(root, base, writes)  # S7: `git add` (PR worktree and checkout) would refuse an ignored file
+    line("preflight", f"PR title: {title} (an already open PR keeps its title)")
+    if title == PR_TITLE:
+        line("note", fl.NO_WORK_KEY)
     if refusing:  # BR-19: no GitHub call before a refusal
         line("preflight", f"open a PR from branch {BRANCH} into {base} (branch not checked: no GitHub call before "
                           "the refusal); stage the files in the checkout")
@@ -340,6 +347,7 @@ def preflight_attach(ws, conf, guard):
     listed = fl.compozy("agent", "instance", "list", "--workspace", ws, "--limit", "100")
     existing = {i["agent_name"] for i in listed.get("instances", []) if i.get("state") != "archived"}
     missing = [a for a in fl.team(conf) if a not in fl.ON_DEMAND and a not in existing]
+    fl.refuse_capacity(listed, len(missing))
     for agent in missing:
         pending = [s for s in fl.compozy("agent", "heartbeat", "sources", agent, "--workspace", ws).get("scripts", [])
                    if not s.get("approved")]
@@ -415,7 +423,7 @@ def smoke(ws, plan):
                           capture_output=True, text=True)
     status = json.loads(proc.stdout).get("status") if proc.returncode == 0 and proc.stdout.strip() else None
     if status != "completed":
-        return False, f"{repo} pr_context #{prs[0]['number']} failed ({(proc.stderr or proc.stdout).strip()[:200]})"
+        return False, f"{repo} pr_context #{prs[0]['number']} failed ({fl.cli_error(proc)})"
     return True, f"{repo} still served (pr_context smoke ok)"
 
 
@@ -446,7 +454,7 @@ def apply_policy(ws, plan):
         fl.refuse(f"policy switch not verified ({text}); no project file written")
 
 
-def publish(root, conf, writes):
+def publish(root, conf, writes, title):
     """Open the reviewed PR carrying the files (US-011), then write them to the checkout, staged."""
     github = conf["roles"]["code"]["github"]
     base = github["base"]
@@ -456,7 +464,7 @@ def publish(root, conf, writes):
             if (wt / rel).is_file() and (wt / rel).read_text() != text:
                 fl.refuse(f"{rel} exists on origin/{base} with other content; update the checkout, then re-run")
 
-    number = fl.publish(root, base, github["repo"], BRANCH, writes, PR_TITLE, PR_BODY,
+    number = fl.publish(root, base, github["repo"], BRANCH, writes, title, PR_BODY,
                         "protected paths: review it and merge it outside the factory", before=same_on_base)
     for rel, text in writes.items():
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -471,6 +479,8 @@ def main():
     parser.add_argument("--from", dest="source", help="factory.toml to copy when the project has none")
     parser.add_argument("--allow-unsupported-adapter", action="store_true",
                         help="set up even when an adapter has no passing conformance record")
+    parser.add_argument("--work-key", help="work item key for the PR title (Jira PROJ-123, GitHub #123); asked on "
+                                           "a terminal, empty: none")
     args = parser.parse_args()
     ws, tty = args.workspace, sys.stdin.isatty()
     root = fl.workspace_root(ws)
@@ -482,8 +492,9 @@ def main():
     preflight_extensions(conf)
     plan = preflight_policy(ws, conf, tty) if GHAR in providers(conf, "review") else None
     refusing = plan is not None and not tty
+    title = fl.pr_title(PR_TITLE, fl.work_key(conf, args.work_key, tty and bool(writes), root))
     if writes:
-        preflight_publish(root, conf, writes, refusing)
+        preflight_publish(root, conf, writes, refusing, title)
     labels = preflight_labels(conf, refusing)
     agents = preflight_attach(ws, conf, guard)
     if refusing:
@@ -497,7 +508,7 @@ def main():
     if plan:
         apply_policy(ws, plan)
     if writes:
-        number = publish(root, conf, writes)
+        number = publish(root, conf, writes, title)
         fl.load_factory_toml(root)
         for rel, tag, note in ((REL_TOML, "factory", ""), (REL_NR, "newrelic", ""),
                                (REL_REVIEW, "review", " from template (edit it)")):
@@ -518,7 +529,7 @@ def main():
         for text in proc.stdout.splitlines():
             line("attach", text)
         if proc.returncode != 0:
-            print(proc.stderr.strip(), file=sys.stderr)
+            print(fl.cli_error(proc), file=sys.stderr)
             return 1
     if writes:
         line("todo", f"review and merge PR #{number} outside the factory (protected paths)")

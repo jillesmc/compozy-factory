@@ -89,8 +89,10 @@ def project(tmp_path):
     return tmp_path / "acme-api"
 
 
-def setup(project, env, answers=ANSWERS, tty=True, repo_root=REPO):
-    args = (str(project), "--from", str(REPO / "factory.example.toml"))
+def setup(project, env, answers=ANSWERS, tty=True, repo_root=REPO, work_key=""):
+    """work_key None: no --work-key, so a terminal is asked for it (the next answer line)."""
+    args = (str(project), "--from", str(REPO / "factory.example.toml"),
+            *(() if work_key is None else ("--work-key", work_key)))
     if tty:
         return run_tty("setup", *args, env=env, answer=answers, repo_root=repo_root)
     return run("setup", *args, env=env, stdin=answers, repo_root=repo_root)
@@ -322,7 +324,8 @@ def test_s6_4_a_working_copy_edited_during_the_prompt_is_refused(fake, env, proj
     import pty
     full = {**{k: v for k, v in os.environ.items() if not k.startswith("COMPOZY_")}, **env}
     master, slave = pty.openpty()
-    argv = [str(REPO / "bin" / "setup"), str(project), "--from", str(REPO / "factory.example.toml")]
+    argv = [str(REPO / "bin" / "setup"), str(project), "--from", str(REPO / "factory.example.toml"),
+            "--work-key", ""]
     proc = subprocess.Popen(argv, stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=full)
     os.close(slave)
     os.write(master, b"acme-api-prod\n1234567\n\noctocat\n")
@@ -376,9 +379,23 @@ def test_from_never_overwrites_an_existing_factory_toml(fake, env, project):
     toml.write_text("[language]\nposts = \"en\"\n")
     proc = setup(project, env, tty=False)
     assert proc.returncode == 1
-    assert proc.stdout.strip().endswith("differs from " + str(REPO / "factory.example.toml")
-                                        + "; setup never rewrites it (change it in a PR)")
+    assert proc.stdout.strip().splitlines()[-1] == (
+        f"refused: .compozy/factory/factory.toml exists and differs from --from {REPO / 'factory.example.toml'}; "
+        "re-run without --from to keep it")
     assert toml.read_text() == "[language]\nposts = \"en\"\n" and fake.calls == []
+
+
+def test_s7_from_refuses_a_factory_toml_an_earlier_run_extended(fake, env, project):
+    """S7: an earlier run appended the deploy trigger set; re-running with the same --from names the fix."""
+    toml = project / ".compozy/factory/factory.toml"
+    toml.parent.mkdir(parents=True)
+    text = (REPO / "factory.example.toml").read_text() + '\n[[roles.deploy.paths]]\nincludes = ["src/**"]\n'
+    toml.write_text(text)
+    proc = setup(project, env, tty=False)
+    assert proc.stdout.splitlines()[-1] == (
+        f"refused: .compozy/factory/factory.toml exists and differs from --from {REPO / 'factory.example.toml'}; "
+        "re-run without --from to keep it")
+    assert proc.returncode == 1 and toml.read_text() == text and fake.calls == []
 
 
 def assert_refused_in_preflight(fake, env, project, proc, before, last):
@@ -472,3 +489,153 @@ def test_fix6_setup_notes_absent_deploy_paths(fake, env, project):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert f"preflight  {fl.NO_DEPLOY_PATHS}" in proc.stdout and "every train waits for a Deployment" in proc.stdout
     assert "paths" not in fl.load_factory_toml(project)[1]["roles"]["deploy"]
+
+
+def test_s7_an_info_exclude_rule_refuses_in_preflight_and_names_it(fake, env, project):
+    """S7: an ignore rule `git add` would hit (the checkout's or the PR worktree's) refuses before the switch."""
+    exclude = project / ".git/info/exclude"
+    lineno = len(exclude.read_text().splitlines()) + 1
+    exclude.write_text(exclude.read_text() + ".compozy/\n")
+    before = snapshot(project, policy_dir(env), fl.Path(env["COMPOZY_HOME"]))
+    proc = setup(project, env)
+    assert_refused_in_preflight(fake, env, project, proc, before, (
+        f"refused: .compozy/factory/factory.toml is ignored by .git/info/exclude:{lineno} (.compozy/) — narrow "
+        "that rule, then re-run"))
+
+
+def test_s7_a_gitignore_rule_refuses_in_preflight_and_names_it(fake, env, project):
+    (project / ".gitignore").write_text("*.log\nREVIEW.md\n")
+    git(env, "-C", str(project), "add", ".gitignore")
+    git(env, "-C", str(project), "commit", "-q", "-m", "ignore")
+    git(env, "-C", str(project), "push", "-q", "origin", "HEAD:develop")
+    before = snapshot(project, policy_dir(env), fl.Path(env["COMPOZY_HOME"]))
+    proc = setup(project, env)
+    assert_refused_in_preflight(fake, env, project, proc, before, (
+        "refused: REVIEW.md is ignored by .gitignore:2 (REVIEW.md) — narrow that rule, then re-run"))
+
+
+def test_s7_setup_refuses_over_always_on_capacity_in_preflight(fake, env, project):
+    fake.load()
+    fake.state["active_elsewhere"], fake.state["max_active_instances"] = 10, 10  # run 3: 6 monorepo + 4 worker
+    fake.save()
+    before = snapshot(project, policy_dir(env), fl.Path(env["COMPOZY_HOME"]))
+    proc = setup(project, env)
+    assert_refused_in_preflight(fake, env, project, proc, before, (
+        "refused: always-on capacity: 10 active + 6 new > 10 (agents.always_on.max_active_instances); raise it, "
+        "then re-run"))
+
+
+def test_s7_setup_rerun_counts_only_the_missing_agents(fake, env, project):
+    fake.load()
+    fake.state["instances"] = [{"id": f"ainst-{a}", "agent_name": a, "state": "active"} for a in fl.AGENTS[:4]]
+    fake.state["active_elsewhere"], fake.state["max_active_instances"] = 6, 11
+    fake.save()
+    before = snapshot(project, policy_dir(env), fl.Path(env["COMPOZY_HOME"]))
+    proc = setup(project, env)
+    assert_refused_in_preflight(fake, env, project, proc, before, (
+        "refused: always-on capacity: 10 active + 2 new > 11 (agents.always_on.max_active_instances); raise it, "
+        "then re-run"))
+    fake.load()
+    fake.state["max_active_instances"] = 12
+    fake.save()
+    proc = setup(project, env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert [c[3] for c in fake.calls if c[:3] == ["agent", "instance", "create"]] == fl.AGENTS[4:]
+
+
+TITLE = "onboard the factory (factory.toml, newrelic.toml, REVIEW.md)"
+
+
+def test_s7_work_key_asked_on_the_terminal_goes_into_the_pr_title(fake, env, project):
+    proc = setup(project, env, answers="acme-api-prod\n1234567\n\noctocat\nOTHER-18085\ny\n", work_key=None)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    title = f"chore: OTHER-18085 {TITLE}"
+    assert f"preflight  PR title: {title} (an already open PR keeps its title)" in proc.stdout
+    assert fl.NO_WORK_KEY not in proc.stdout
+    create = next(c for c in gh_calls(env) if c[:2] == ["pr", "create"])
+    assert create[create.index("--title") + 1] == title
+
+
+def test_s7_without_a_work_key_the_title_stays_and_a_note_says_so(fake, env, project):
+    proc = setup(project, env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert f"preflight  PR title: chore: {TITLE} (an already open PR keeps its title)" in proc.stdout
+    assert f"note       {fl.NO_WORK_KEY}" in proc.stdout
+    create = next(c for c in gh_calls(env) if c[:2] == ["pr", "create"])
+    assert create[create.index("--title") + 1] == f"chore: {TITLE}"
+
+
+def test_s7_a_malformed_work_key_refuses_in_preflight(fake, env, project):
+    before = snapshot(project, policy_dir(env), fl.Path(env["COMPOZY_HOME"]))
+    proc = setup(project, env, work_key="acme-18085")
+    assert_refused_in_preflight(fake, env, project, proc, before, (
+        "refused: work key 'acme-18085' does not match the work/jira adapter's key_format "
+        "^[A-Z][A-Z0-9]+-\\d+$; fix --work-key, then re-run"))
+
+
+def commit_gitignore(env, project, text):
+    (project / ".gitignore").write_text(text)
+    for args in (["add", ".gitignore"], ["commit", "-q", "-m", "ignore"], ["push", "-q", "origin", "HEAD:develop"]):
+        git(env, "-C", str(project), *args)
+
+
+def test_f7_1_a_negated_rule_allows_the_file(fake, env, project):
+    commit_gitignore(env, project, "*.md\n!REVIEW.md\n")
+    proc = setup(project, env)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "ignored" not in proc.stdout
+
+
+def test_f7_4_the_base_trees_ignore_rule_refuses_though_the_checkout_dropped_it(fake, env, project):
+    """The PR worktree is built from origin/develop, whose committed .gitignore still lists REVIEW.md."""
+    commit_gitignore(env, project, "*.log\nREVIEW.md\n")
+    (project / ".gitignore").write_text("*.log\n")  # unstaged edit in the checkout only
+    before = snapshot(project, policy_dir(env), fl.Path(env["COMPOZY_HOME"]))
+    proc = setup(project, env)
+    assert_refused_in_preflight(fake, env, project, proc, before, (
+        "refused: REVIEW.md is ignored by origin/develop:.gitignore:2 (REVIEW.md) — narrow that rule, then re-run"))
+
+
+def key_conf(provider):
+    conf = fl.tomllib.loads((REPO / "factory.example.toml").read_text())
+    conf["roles"]["work"]["provider"] = provider
+    return conf
+
+
+def refused_key(capsys, conf, key, root):
+    with pytest.raises(SystemExit):
+        fl.work_key(conf, key, False, root)
+    return capsys.readouterr().out.strip()
+
+
+def test_f7_2_the_installed_adapters_key_format_decides(installed, project, monkeypatch, capsys):
+    """An overridden work adapter's key_format regex is enforced, not the bundled Jira shape."""
+    monkeypatch.setenv("COMPOZY_HOME", installed["COMPOZY_HOME"])
+    home = fl.Path(installed["COMPOZY_HOME"])
+    adapter = home / "factory/adapters/work-jira"
+    skill = adapter / "SKILL.md"
+    skill.write_text(skill.read_text().replace('"^[A-Z][A-Z0-9]+-\\\\d+$"', '"^ACME-\\\\d+$"'))
+    record = fl.installed_record(home)
+    record["adapters"]["work-jira"]["tree"] = fl.tree_digest(adapter)
+    fl.write_json(home / "factory/installed.json", record)
+    conf = key_conf("jira")
+    assert fl.work_key(conf, "ACME-7", False, project) == "ACME-7"
+    assert refused_key(capsys, conf, "OTHER-18085", project) == (
+        "refused: work key 'OTHER-18085' does not match the work/jira adapter's key_format ^ACME-\\d+$; "
+        "fix --work-key, then re-run")
+
+
+def test_f7_2_a_key_with_whitespace_is_refused_for_any_provider(installed, project, monkeypatch, capsys):
+    monkeypatch.setenv("COMPOZY_HOME", installed["COMPOZY_HOME"])
+    for provider in ("jira", "custom"):
+        assert refused_key(capsys, key_conf(provider), "ACME-1\nsecond line", project) == (
+            "refused: work key 'ACME-1\\nsecond line' contains whitespace; fix --work-key, then re-run")
+
+
+def test_f7_5_github_work_keys_are_hash_numbers(installed, project, monkeypatch, capsys):
+    monkeypatch.setenv("COMPOZY_HOME", installed["COMPOZY_HOME"])
+    conf = key_conf("github")
+    assert fl.work_key(conf, "#123", False, project) == "#123"
+    for bad in ("GH-1", "123"):
+        assert refused_key(capsys, conf, bad, project).startswith(f"refused: work key '{bad}' does not match the "
+                                                                  "work/github adapter's key_format ^#\\d+$")

@@ -283,12 +283,14 @@ poll "$WSB" | json 'assert [i["key"] for i in d["items"]] == ["stub-b"], d; prin
 step "IT-008 (daemon path) the daemon runs both approved sources from its temporary copy (dry-run check, heartbeats on)"
 # The daemon copies an approved source to a temp dir and runs it with a scrubbed environment (HOME and PATH,
 # no COMPOZY_HOME), so the wrapper must find $COMPOZY_HOME as ~/.compozy. This daemon restart gets a HOME
-# whose .compozy is the isolated home and the fake gh first on PATH, and the installed auditor's active hours
-# (12:00-14:00) widen to the whole day so its gate reaches the source; then both go back.
+# whose .compozy is the isolated home and the fake gh first on PATH, and the installed dispatcher's (08:00-20:00)
+# and auditor's (12:00-14:00) active hours widen to the whole day so their gates reach the sources at any hour;
+# then all go back.
 mkdir -p "$T/operator"; ln -s "$HOME_DIR" "$T/operator/.compozy"
-HB=$HOME_DIR/agents/factory-auditor/HEARTBEAT.md
-cp "$HB" "$T/auditor-heartbeat.md"
-sed -i 's/start: "12:00"/start: "00:00"/; s/end: "14:00"/end: "23:59"/' "$HB"
+for agent in factory-dispatcher factory-auditor; do
+  cp "$HOME_DIR/agents/$agent/HEARTBEAT.md" "$T/$agent-heartbeat.md"
+  sed -i 's/start: "[0-9:]*"/start: "00:00"/; s/end: "[0-9:]*"/end: "23:59"/' "$HOME_DIR/agents/$agent/HEARTBEAT.md"
+done
 sed -i 's/^enabled = false$/enabled = true/' "$HOME_DIR/config.toml"
 cz daemon stop >/dev/null
 env -i HOME="$T/operator" PATH="$T/fakebin:$PATH" USER="${USER:-}" COMPOZY_HOME="$HOME_DIR" compozy daemon start >/dev/null
@@ -298,7 +300,7 @@ src = d.get("sources") or []
 print("'"$agent"' sources:", [(s["id"], s["result"], s["items"]) for s in src])
 assert src and all(s["result"] != "failing" for s in src), src'
 done
-cp "$T/auditor-heartbeat.md" "$HB"
+for agent in factory-dispatcher factory-auditor; do cp "$T/$agent-heartbeat.md" "$HOME_DIR/agents/$agent/HEARTBEAT.md"; done
 sed -i 's/^enabled = true$/enabled = false/' "$HOME_DIR/config.toml"
 cz daemon stop >/dev/null; cz daemon start >/dev/null
 
@@ -360,7 +362,7 @@ env GIT_CONFIG_GLOBAL="$MIG/gitconfig" GIT_CONFIG_NOSYSTEM=1 PATH="$MIG/bin:$PAT
 import os, pty, subprocess, sys
 master, slave = pty.openpty()
 proc = subprocess.Popen(sys.argv[1:], stdin=slave)
-os.close(slave); os.write(master, b"octocat\n\n"); sys.exit(proc.wait())
+os.close(slave); os.write(master, b"octocat\n\n\n"); sys.exit(proc.wait())  # approvers, no deploy paths, no work key
 EOF
 mkdir -p "$MIG/migrated/.compozy/factory"
 for f in .compozy/factory/factory.toml .compozy/newrelic.toml; do
@@ -430,7 +432,7 @@ EOF
   [ "$(gpolicy)" = "approved $V1" ] || { echo "refusal changed the policy: $(gpolicy)"; exit 1; }
   cz agent instance list --workspace setupws -o json | json 'assert not d["instances"], d'
   echo "no TTY: refused after the preflight; no file, no gh call, policy still V1, no instance"
-  setup_run $'acme-api-prod\n1234567\n\noctocat\ny\n' | tee "$SG/setup.out"
+  setup_run $'acme-api-prod\n1234567\n\noctocat\nOTHER-18085\ny\n' | tee "$SG/setup.out"  # ..., work key, confirm
   V2=$(sha256sum "$POL" | cut -d' ' -f1)
   [ "$(gpolicy)" = "approved $V2" ] && [ "$V2" != "$V1" ] && [ -f "$T/policies/$V1.toml" ] || { echo "policy not switched to V2: $(gpolicy)"; exit 1; }
   echo "daemon: --cmd policy reports V2 ${V2:0:12} active; V1 kept on disk"
@@ -441,6 +443,7 @@ EOF
     [ "$(gits --git-dir "$SG/origin.git" show "factory/setup:$f")" = "$(cat "$SG/project/$f")" ]
   done
   grep -q '^pr         #1 opened into develop' "$SG/setup.out"
+  grep -q -- '--title chore: OTHER-18085 onboard the factory ' "$SG/gh.log" || { echo "PR title without the work key"; exit 1; }
   echo "PR branch factory/setup carries the three files written to the checkout"
   cz agent instance list --workspace setupws -o json | json '
 act = sorted(i["agent_name"] for i in d["instances"] if i["state"] == "active")

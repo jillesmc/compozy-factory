@@ -218,10 +218,10 @@ def work_key_format(conf):
         _, installed = fg.resolve(ROOT, "work", provider, conf)
     except fg.Refused as exc:
         sys.exit(f"refused: {exc}")
-    match = re.search(r"^key_format: (.*)$", (installed / "SKILL.md").read_text().split("\n---", 1)[0], re.M)
-    if not match:
+    found = fg.key_format(installed)
+    if not found:
         sys.exit(f"refused: adapter work/{provider} has no key_format")
-    return json.loads(match.group(1))
+    return found
 
 
 def create(conf, f, env):

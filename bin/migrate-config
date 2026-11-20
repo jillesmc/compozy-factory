@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Convert a project's pre-roles factory.toml to the role grammar, in one reviewed PR (BR-13, BR-14).
 
-Usage: bin/migrate-config <workspace> [--dry-run]
+Usage: bin/migrate-config <workspace> [--dry-run] [--work-key <KEY>]
 
 Old grammar → `[roles.*]` (lossless: every old value lands under its mapped key, or the script refuses); the old
 `[newrelic]` becomes the extension-owned `.compozy/newrelic.toml`. On the operator's terminal it asks for the
 promotion approvers (the old GITHUB_APP_PROMOTION_APPROVERS is a write-only secret) and the optional
 `[roles.deploy] paths` (the release pipeline's trigger sets, one at a time: includes, then excludes,
 comma-separated outside `{}` and `[]`; an empty includes ends the list; none: absent, every train waits for a
-Deployment), and refuses on a non-interactive stdin before writing anything. Then it commits both files on a
+Deployment), and refuses on a non-interactive stdin before writing anything (as it does a file `git add` would
+skip as ignored: the refusal names the rule). Then it commits both files on a
 branch `factory/migrate-roles` from `origin/<base>` in a temporary worktree (the workspace checkout is never
 touched), pushes it and opens the PR into `<base>` (protected paths: the operator merges it outside the factory).
+Its title is `chore: <KEY> ...` with the work key from --work-key or asked (empty: none, with a note), checked
+against the work adapter's key shape (Jira `PROJ-123`); an already open PR keeps its title.
 Finally it adds the repository's block to the github-app-review policy working copy and stages it through
 bin/stage-policy; nothing is activated (the runbook switches GITHUB_APP_POLICY_DIGEST). It never reads or prints
 a secret. A file already in the role grammar is reported `unchanged`.
@@ -142,6 +145,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("workspace")
     parser.add_argument("--dry-run", action="store_true", help="print the converted files; write nothing")
+    parser.add_argument("--work-key", help="work item key for the PR title (Jira PROJ-123, GitHub #123); asked on "
+                                           "the terminal, empty: none")
     args = parser.parse_args()
     root = fl.workspace_root(args.workspace)
     path = root / REL_TOML
@@ -164,6 +169,7 @@ def main():
               f"--- policy block for {repo}: delivery_base {base}, promotion {base} -> {release}, "
               f"approvers asked on the real run\n{fl.NO_DEPLOY_PATHS} (asked on the real run)\ndry-run: nothing written")
         return 0
+    fl.refuse_ignored(root, base, (REL_TOML, REL_NR), checkout=False)  # S7: it writes only in the PR worktree
     if not sys.stdin.isatty():
         fl.refuse("promotion approvers need an interactive terminal (stdin is not a TTY)")
     print(f"converted  {REL_TOML} ({len([s for s in fl.OLD_SECTIONS if s in old])} sections → [roles.*])")
@@ -174,6 +180,10 @@ def main():
         new["roles"]["deploy"]["paths"] = paths
         toml_text = dump(new)
     print("\n".join(f"deploy     {text}" if paths else text for text in fl.deploy_paths_lines(paths)))
+    title = fl.pr_title(PR_TITLE, fl.work_key(new, args.work_key, True, root))
+    print(f"pr         title: {title} (an already open PR keeps its title)")
+    if title == PR_TITLE:
+        print(fl.NO_WORK_KEY)
     try:
         working, data = fl.plan_policy(repo, block)
     except ValueError as exc:
@@ -182,7 +192,7 @@ def main():
         if (wt / REL_TOML).read_bytes() != toml_bytes:
             fl.refuse(f"the checkout's {REL_TOML} differs from origin/{base}; update the checkout, then re-run")
 
-    fl.publish(root, base, repo, BRANCH, {REL_TOML: toml_text, REL_NR: nr_text}, PR_TITLE, PR_BODY,
+    fl.publish(root, base, repo, BRANCH, {REL_TOML: toml_text, REL_NR: nr_text}, title, PR_BODY,
                "the reviewer flags the factory.toml change for you", before=same_base)
     if data is None:
         print(f"policy     working copy {working} already has this block for {repo}")
