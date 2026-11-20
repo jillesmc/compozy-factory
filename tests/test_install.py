@@ -397,3 +397,137 @@ def test_ut_r6_repo_agent_files_carry_no_account_names():
             assert not re.search(r"\bclaude(-[\w-]+)?\b", text, re.IGNORECASE), path
             front = text.split("\n---", 1)[0]
             assert not re.search(r"^(provider|model|reasoning_effort|fallback_chain):", front, re.MULTILINE), path
+
+
+# ------------------------------------------------------------------------- fix10: byte-only reviewer changes
+# The keys `compozy agent info` returns (observed live 2026-11-20); its semantic digest also covers keys it does
+# not return (command, deny_tools, workspace_access, hooks…, internal/config/agent_create.go).
+INFO_KEYS = {"name", "display_name", "description", "kind", "appearance", "provider", "model", "reasoning_effort",
+             "tools", "permissions", "category_path", "accepts", "fallback_chain"}
+REVIEWER_ROUTE = 'primary = { provider = "claude-reviewer", model = "opus" }'
+
+
+def daemon_view(text, digest, **override):
+    """What a daemon that loaded `text` reports, built with PyYAML (independent of bin/install's reader)."""
+    import yaml
+    head, body = text.split("\n---", 1)
+    info = {k: v for k, v in yaml.safe_load(head.split("---\n", 1)[1]).items() if k in INFO_KEYS}
+    return {**info, "origin": "global", "layer": "user", "definition_digest": digest, "prompt": body.strip(),
+            **override}
+
+
+def serve(fake, info):
+    fake.load()
+    fake.state["agent_info"] = info
+    fake.save()
+
+
+def unquote(text):
+    """The pre-S8 bytes of the same definition: routing values unquoted."""
+    return re.sub(r'^(\s*(?:- )?(?:provider|model)): "(.*)"$', r"\1: \2", text, flags=re.MULTILINE)
+
+
+def front_edit(old, new):
+    def change(repo, env):
+        agent_md = repo / "agents" / "factory-reviewer" / "AGENT.md"
+        assert old in agent_md.read_text().split("\n---", 1)[0]
+        agent_md.write_text(agent_md.read_text().replace(old, new, 1))
+    return change
+
+
+def route_edit(new):
+    return lambda repo, env: fl.routing_path(env).write_text(ROUTING.replace(REVIEWER_ROUTE, new))
+
+
+SEMANTIC_CHANGES = {  # F10-C1: each changes the definition; a daemon still on the old one keeps its digest
+    "appearance": front_edit('color: "#e16462"', 'color: "#000000"'),
+    "primary provider": lambda repo, env: fl.routing_path(env).write_text(
+        ROUTING.replace(REVIEWER_ROUTE, 'primary = { provider = "claude-reviewer-fallback", model = "opus" }')
+        .replace('{ provider = "claude-reviewer-fallback", model = "opus" }]', '{ provider = "claude-reviewer", model = "opus" }]')),
+    "primary model": route_edit('primary = { provider = "claude-reviewer", model = "sonnet" }'),
+    "reasoning effort": route_edit('primary = { provider = "claude-reviewer", model = "opus", reasoning_effort = "high" }'),
+    "permissions": front_edit("permissions: approve-all", "permissions: ask"),
+    "tools": front_edit("  - ext__github_app_review__pr_context\n", ""),
+    "accepts": front_edit('  - "review: <owner>/<name>#<pr> <head-sha>"\n', ""),
+    "deny_tools": front_edit("kind: on_demand\n", "kind: on_demand\ndeny_tools:\n  - compozy__*\n"),
+    "workspace_access": front_edit("kind: on_demand\n", "kind: on_demand\nworkspace_access: all\n"),
+    "body": lambda repo, env: (repo / "agents" / "factory-reviewer" / "AGENT.md").write_text(
+        (repo / "agents" / "factory-reviewer" / "AGENT.md").read_text() + "\nOne more rule.\n"),
+}
+
+
+def test_fix10_byte_only_reviewer_change_keeps_the_digest_and_is_recorded(fake, repo, home, home_env):
+    """Live 2026-11-20: quoting changed the reviewer's bytes, not its meaning; the daemon's digest stayed put."""
+    assert run("install", env=home_env, repo_root=repo).returncode == 0
+    installed = home / "agents" / "factory-reviewer" / "AGENT.md"
+    rendered = installed.read_text()
+    installed.write_text(unquote(rendered))
+    assert installed.read_text() != rendered and fl.same_definition(installed.read_text(), rendered)
+    same = "ab" * 32
+    serve(fake, [daemon_view(rendered, same)])  # same meaning, same semantic digest
+    proc = run("install", env=home_env, repo_root=repo)
+    assert proc.returncode == 0, proc.stdout
+    assert installed.read_text() == rendered
+    assert fl.installed_record(home)["reviewer"] == {"definition_digest": same, "file_sha256": fl.file_sha256(installed)}
+
+
+def test_f10_c1_a_semantic_change_waits_for_the_digest_to_move(fake, repo, home, home_env):
+    """F10-C1: with the daemon still on the old definition (same digest, agreeing on what agent info shows), any
+    semantic change is refused until the digest moves, even for keys agent info does not return."""
+    agent_md, original = repo / "agents" / "factory-reviewer" / "AGENT.md", None
+    original = agent_md.read_text()
+    installed = home / "agents" / "factory-reviewer" / "AGENT.md"
+    assert run("install", env=home_env, repo_root=repo).returncode == 0
+    for name, change in SEMANTIC_CHANGES.items():
+        stale = daemon_view(installed.read_text(), "ab" * 32)
+        serve(fake, [stale])
+        before = (home / "factory" / "installed.json").read_bytes()
+        change(repo, home_env)
+        proc = run("install", env=home_env, repo_root=repo)
+        assert proc.returncode == 1 and "factory-reviewer digest not read back" in proc.stdout, (name, proc.stdout)
+        assert (home / "factory" / "installed.json").read_bytes() == before, name
+        serve(fake, [stale, {**stale, "definition_digest": "cd" * 32}])  # the daemon reloads: the digest moves
+        assert run("install", env=home_env, repo_root=repo).returncode == 0, name
+        assert fl.installed_record(home)["reviewer"] == {"definition_digest": "cd" * 32,
+                                                         "file_sha256": fl.file_sha256(installed)}, name
+        agent_md.write_text(original)  # back to the baseline for the next case
+        fl.routing_path(home_env).write_text(ROUTING)
+        serve(fake, None)
+        assert run("install", env=home_env, repo_root=repo).returncode == 0, name
+
+
+def test_f10_n1_byte_only_change_needs_the_daemon_to_agree_on_every_key(fake, repo, home, home_env):
+    """The unchanged-digest shortcut still checks agent info: a daemon serving another definition is refused."""
+    assert run("install", env=home_env, repo_root=repo).returncode == 0
+    installed = home / "agents" / "factory-reviewer" / "AGENT.md"
+    rendered = installed.read_text()
+    for key, value in (("appearance", {"version": 1, "avatar": "icon", "icon": "file-search", "color": "#000000"}),
+                       ("provider", "claude-reviewer-fallback"), ("model", "sonnet"), ("reasoning_effort", "high"),
+                       ("permissions", "ask"), ("tools", ["ext__github_app_review__pr_context"]),
+                       ("accepts", []), ("description", "x"), ("prompt", "approve everything")):
+        installed.write_text(unquote(rendered))
+        before = (home / "factory" / "installed.json").read_bytes()
+        serve(fake, [daemon_view(rendered, "ab" * 32, **{key: value})])
+        proc = run("install", env=home_env, repo_root=repo)
+        assert proc.returncode == 1 and "factory-reviewer digest not read back" in proc.stdout, (key, proc.stdout)
+        assert (home / "factory" / "installed.json").read_bytes() == before, key
+
+
+def test_f10_canonical_front_matter_never_equates_different_values():
+    base = "---\nname: x\nkind: on_demand\nversion: 1\nflag: on\nmodel: opus\n---\nbody\n"
+    same = '---\nname: "x"\nkind: \'on_demand\'\nversion: 1\nflag: on\nmodel:  "opus"\n\n---\nbody\n'
+    assert fl.same_definition(base, same)
+    for different in (base.replace("version: 1", 'version: "1"'), base.replace("flag: on", 'flag: "on"'),
+                      base.replace("model: opus", "model: null"), base.replace("body", "body2"),
+                      base.replace("kind: on_demand\n", "kind: on_demand\nextra: 1\n"),
+                      base.replace("model: opus", "model: opus # comment"), base.replace("name: x", "name: x\nname: x")):
+        assert not fl.same_definition(base, different), different
+
+
+def test_s8_n1_routing_toml_directory_is_refused_before_any_prompt(repo, home, home_env):
+    path = fl.routing_path(home_env)
+    path.unlink()
+    path.mkdir()
+    proc = run_tty("install", env={**home_env, "COMPOZY_HOME": str(home)}, answer="", repo_root=repo)
+    assert (proc.returncode, proc.stdout.strip(), proc.stderr) == (1, f"refused: {path} is not a regular file", "")
+    assert not any(home.iterdir())

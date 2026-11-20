@@ -206,8 +206,32 @@ def resolve_routing(reconfigure):
     return routing, asking
 
 
-def read_back_reviewer(pre, changed):
-    """The daemon's semantic definition digest of the just-installed reviewer, or raise RuntimeError."""
+def daemon_view(text):
+    """What `compozy agent info` must echo of `text`: every front-matter key, and the body as `prompt`."""
+    mapping, body = fl.front_matter(text)
+    return {**mapping, "prompt": body.strip()}
+
+
+# Definition keys `compozy agent info` echoes (observed 2026-11-20); its digest covers more (command, deny_tools…).
+ECHOED = ("name", "display_name", "description", "kind", "appearance", "provider", "model", "reasoning_effort",
+          "tools", "permissions", "category_path", "accepts", "fallback_chain", "prompt")
+
+
+def loaded(info, expected):
+    """agent info agrees with the rendered file on every key it echoes, both ways (a key only one side has, like a
+    reasoning_effort the file dropped, disagrees), and on every other file key it happens to report."""
+    keys = set(ECHOED) | {key for key in expected if key in info}
+    return "prompt" in info and all((info.get(key) or None) == (expected.get(key) or None) for key in keys)
+
+
+def read_back_reviewer(pre, changed, same):
+    """The daemon's semantic definition digest of the just-installed reviewer, or raise RuntimeError.
+
+    When the file changed, the daemon has loaded it once its digest moved (UT-056). Only when the change is
+    byte-only (`same`: the view of a previous file that fl.same_definition found equal to the rendered one, e.g.
+    quoting) may the digest stay, and then only once `agent info` agrees with it on every key it reports
+    (fix10). The daemon's digest covers keys agent info does not show (command, deny_tools, hooks…), so any
+    other change must move the digest (F10-C1)."""
     deadline = time.monotonic() + float(os.environ.get("FACTORY_READBACK_TIMEOUT", "30"))
     while True:
         try:
@@ -216,7 +240,7 @@ def read_back_reviewer(pre, changed):
             if info.get("origin") != "global" or info.get("layer", "user") != "user":
                 raise RuntimeError(f"factory-reviewer resolves to origin {info.get('origin')} layer "
                                    f"{info.get('layer')} (expected global, user)")
-            if digest and not (changed and digest == pre):
+            if digest and (not changed or digest != pre or (same is not None and loaded(info, same))):
                 return digest
             last = f"daemon still reports digest {fl.short(digest)}"
         except RuntimeError as exc:
@@ -305,6 +329,9 @@ def main():
 
     reviewer_dest = agents_home / fl.ON_DEMAND[0] / "AGENT.md"
     reviewer_changed = not reviewer_dest.is_file() or reviewer_dest.read_bytes() != rendered[fl.ON_DEMAND[0]]
+    new_reviewer = rendered[fl.ON_DEMAND[0]].decode()
+    same = daemon_view(new_reviewer) if reviewer_changed and reviewer_dest.is_file() and fl.same_definition(
+        reviewer_dest.read_text(), new_reviewer) else None  # read before apply() replaces the old file
     pre = None
     if not args.dry_run and reviewer_dest.is_file():  # an installed reviewer: its current digest must be known (F-6)
         for _ in range(3):
@@ -333,7 +360,7 @@ def main():
             for path in stale:
                 shutil.rmtree(path)
         try:
-            digest = read_back_reviewer(pre, reviewer_changed and pre is not None)
+            digest = read_back_reviewer(pre, reviewer_changed and pre is not None, same)
         except RuntimeError as exc:
             print("\n".join(lines))
             print(f"error: {exc}; installed.json keeps the previous record")

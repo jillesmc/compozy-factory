@@ -873,6 +873,8 @@ def refuse_routing_symlink(path=None):
     bad = next((p for p in (path.parent, path) if p.is_symlink()), None)
     if bad:
         raise Refused(f"{bad} is a symlink (symlink_not_supported)")
+    if path.exists() and not path.is_file():  # S8-N1: e.g. a directory named routing.toml
+        raise Refused(f"{path} is not a regular file")
 
 
 def load_routing(path=None):
@@ -970,3 +972,89 @@ def installed_routing(agents, home=None):
         lines.append(f"routing {agent} " + (route_text(installed_route(path.read_text())) if path.is_file()
                                             else "not installed; run bin/install"))
     return lines
+
+
+# ------------------------------------------------------------------- fix10: canonical AGENT.md front matter
+_PLAIN = re.compile(r"[A-Za-z_/~][^\t]*")  # starts with a letter, `_`, `/` or `~` (`~` alone is null: marked below)
+_RESERVED = {"~", "null", "true", "false", "yes", "no", "on", "off", "y", "n"}  # YAML 1.1 / 1.2 non-strings
+
+
+def _canon(raw):
+    """One scalar as the value YAML gives it, or a ("plain", raw) marker whenever a plain scalar could resolve to
+    anything but a string or decimal int (bools, nulls, floats, octal…): the marker equals only the same plain
+    text, never a quoted string. Anything outside this subset raises ValueError."""
+    raw = raw.strip()
+    if raw.startswith('"'):
+        return json.loads(raw)  # JSON strings are YAML double-quoted scalars; other escapes raise
+    if raw.startswith("'") and raw.endswith("'") and len(raw) > 1 and "'" not in raw[1:-1].replace("''", ""):
+        return raw[1:-1].replace("''", "'")
+    if re.fullmatch(r"-?(0|[1-9][0-9]*)", raw):
+        return int(raw)
+    if ": " in raw or " #" in raw or raw.endswith(":") or not raw:
+        raise ValueError(raw)
+    if raw.lower() in _RESERVED or not _PLAIN.fullmatch(raw):
+        return ("plain", raw)
+    return raw
+
+
+def _block(lines):
+    """A block under `key:` (already dedented by two): a list of scalars or flat maps, or one flat map."""
+    pair = re.compile(r"([A-Za-z_][\w-]*):(?: (.+))?")
+    if lines and all(line.startswith(("- ", "  ")) for line in lines) and lines[0].startswith("- "):
+        items = []
+        for line in lines:
+            text = line[2:]
+            match = pair.fullmatch(text)
+            if line.startswith("- ") and not match:
+                items.append(_canon(text))
+            elif line.startswith("- "):
+                items.append({match[1]: _canon(match[2] or "")})
+            elif match and isinstance(items[-1], dict) and match[1] not in items[-1]:
+                items[-1][match[1]] = _canon(match[2] or "")
+            else:
+                raise ValueError(line)
+        return items
+    mapping = {}
+    for line in lines:
+        match = pair.fullmatch(line)
+        if not match or match[1] in mapping:
+            raise ValueError(line)
+        mapping[match[1]] = _canon(match[2] or "")
+    if not mapping:
+        raise ValueError("empty block")
+    return mapping
+
+
+def front_matter(text):
+    """(mapping of every front-matter key, body) for the YAML subset factory AGENT.md files use, or None for
+    anything else. Two files with equal results define the same agent: quoting and spacing are normalised, every
+    key is kept, and whatever the parser cannot resolve exactly makes the result None (never equal)."""
+    if not text.startswith("---\n") or "\n---" not in text[3:]:
+        return None
+    head, body = text[4:].split("\n---", 1)
+    lines, data, i = head.split("\n"), {}, 0
+    try:
+        while i < len(lines):
+            line, i = lines[i], i + 1
+            if not line.strip():
+                continue
+            match = re.fullmatch(r"([A-Za-z_][\w-]*):(?: (.*))?", line)
+            if not match or match[1] in data:
+                return None
+            if match[2] and match[2].strip():
+                data[match[1]] = _canon(match[2])
+                continue
+            block = []
+            while i < len(lines) and (lines[i].startswith("  ") or not lines[i].strip()):
+                if lines[i].strip():
+                    block.append(lines[i][2:])
+                i += 1
+            data[match[1]] = _block(block)
+    except (ValueError, IndexError, json.JSONDecodeError):
+        return None
+    return data, body
+
+
+def same_definition(old, new):
+    parsed = front_matter(old)
+    return parsed is not None and parsed == front_matter(new)
