@@ -270,3 +270,29 @@ def test_jira_fields_are_issue_facts_and_foreign_cards_are_left_to_the_operator(
     step = gatekeeper[gatekeeper.index("4. Deploy ok."):gatekeeper.index("5. Deploy failed")]
     assert "never re-derive them from the PR" in step
     assert "change neither its fields nor its status" in step and "step-6 notice" in step
+
+
+def test_e2e_003_protected_path_pr_is_always_reviewed_before_blocking():  # E2E-003 PR #240, 2026-11-19
+    watcher = agent_text("factory-pr-watcher")
+    convention = "send `blocked: #<pr> convention change needs operator`"
+    never = "never the convention-change reason, even for a protected-path PR"
+    protected = watcher.split("## Protected paths")[1].split("## Input")[0]
+    assert "It is still **always reviewed**" in protected and "never skip or short-circuit the reviewer dispatch" in protected
+    procedure = watcher.split("## Procedure")[1].split("## Contest")[0]
+    before_review = procedure[:procedure.index("5. **Review.**")]
+    blocks = [l for l in before_review.splitlines() if "`blocked:" in l]
+    assert len(blocks) == 1 and "On the **5th** round without green" in blocks[0] and never in blocks[0], \
+        "the only block before step 5 is the round cap, under its own reason"
+    review = procedure[procedure.index("5. **Review.**"):procedure.index("6. **Ready.**")]
+    dispatch, wake = review.split("   2. ", 1)[1].split("   3. ", 1)
+    assert "`compozy__session_create` with `agent: factory-reviewer`" in dispatch
+    assert "first `compozy__session_prompt` exactly `review: {code.repo}#<pr> <full-head-sha>`" in dispatch
+    guard = next(l for l in dispatch.splitlines() if "**Reviewer guard" in l)
+    assert "`blocked: #<pr> review reviewer_untrusted`" in guard and never in guard
+    assert convention not in dispatch
+    wake = wake.split("   4. ", 1)[0]
+    assert wake.count(convention) == 1 and procedure.count(convention) == 1, "the procedure blocks a convention change only on the reviewer wake"
+    assert "the line is `reviewed: …` for the current head (either verdict)" in wake[:wake.index(convention)]
+    assert "is not a review and follows the list below like any PR" in wake
+    contest = watcher.split("## Contest")[1].split("## Grammar")[0]
+    assert contest.index("has no app review on the head") < contest.index(convention), "the contest blocks only after an app review on the head"
