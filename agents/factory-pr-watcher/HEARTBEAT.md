@@ -7,7 +7,7 @@ preferences:
   active_hours:
     - timezone: "America/Sao_Paulo"
       start: "08:00"
-      end: "20:00"
+      end: "22:00"
 context:
   include: [monitors_fired]
 ---

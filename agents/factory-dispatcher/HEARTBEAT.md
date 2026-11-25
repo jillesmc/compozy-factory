@@ -3,11 +3,11 @@ version: 1
 enabled: true
 summary: "Accept issues released with factory:deliver by an authorized author and check the work log."
 preferences:
-  min_interval: "60m"
+  min_interval: "2h"
   active_hours:
     - timezone: "America/Sao_Paulo"
       start: "08:00"
-      end: "20:00"
+      end: "22:00"
 context:
   include: [work_log, session_health]
   sources:

@@ -3,11 +3,11 @@ version: 1
 enabled: true
 summary: "Audit the closed factory issues whose deploy completed the observation window."
 preferences:
-  min_interval: "24h"
+  min_interval: "2h"
   active_hours:
     - timezone: "America/Sao_Paulo"
-      start: "12:00"
-      end: "14:00"
+      start: "08:00"
+      end: "22:00"
 context:
   include: []
   sources:
