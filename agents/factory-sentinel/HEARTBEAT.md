@@ -30,8 +30,15 @@ context:
       kind: newrelic/issues
       with:
         priorities: ["CRITICAL", "HIGH"]
+    - id: nr-scope   # optional: no items unless .compozy/newrelic.toml sets logs_where and logs_facet
+      kind: newrelic/logs
+      with:
+        where: "{{logs_where}}"
+        facet: "{{logs_facet}}"
+        window: "24h"
+        threshold: 3
 ---
 
 # Check-in
 
-Once a day (10:00 to 12:00 BRT window). The sources already filtered what is new or grew. Classify each item as the AGENT.md says and return proposals; do not send `intake` without a proposal chosen by the operator.
+Once a day (10:00 to 12:00 BRT window). The sources already filtered what is new or grew. Classify each item as the AGENT.md says and return proposals; do not send `intake` without a proposal chosen by the operator. Items of `nr-scope` are scope signals (AGENT.md, Scope signals): errors of this project seen inside the services that consume it.

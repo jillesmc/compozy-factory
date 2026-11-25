@@ -27,6 +27,13 @@ OLD_SECTIONS = ("repo", "review", "ci", "deploy", "newrelic", "jira")  # BR-7: t
 PROTECTED_PATHS = ["REVIEW.md", ".compozy/factory/factory.toml", ".compozy/newrelic.toml", ".compozy/agents/**",
                    ".compozy/profiles/*/agents/**", ".compozy/skills/**", ".compozy/profiles/*/skills/**"]
 TYPES = {"string": str, "integer": int, "boolean": bool, "list": list, "table": dict}
+# Optional keys of an extension-owned file (schema `file_optional`): type -> (refusal text, check).
+FILE_TYPES = {
+    "account_list": ("a list of 1 to 20 positive integers",
+                     lambda v: isinstance(v, list) and 0 < len(v) <= 20 and all(type(i) is int and i > 0 for i in v)),
+    "clause": ("a non-empty string without a newline, ;, {{ or }}",  # the newrelic extension's placeholder rule
+               lambda v: isinstance(v, str) and v.strip() and not re.search(r"[\r\n;]|\{\{|\}\}", v)),
+}
 POSTS = ("pt-BR", "en")  # languages tools/factory_intake.py has text for
 
 
@@ -198,6 +205,14 @@ def _check_value(root, where, key, spec, value, overlay):
             got = data.get(name)
             if not isinstance(got, TYPES[typ]) or isinstance(got, bool) or got in ("", 0) or (typ == "integer" and got < 0):
                 refuse(f"factory.toml {where} {key}: {value} needs {name} ({typ})")
+        for name, typ in spec.get("file_optional", {}).items():
+            if name in data and not FILE_TYPES[typ][1](data[name]):
+                refuse(f"factory.toml {where} {key}: {value} {name} must be {FILE_TYPES[typ][0]}")
+        for group in spec.get("file_together", []):  # keys that only work as a set
+            have = [n for n in group if n in data]
+            if have and len(have) < len(group):
+                refuse(f"factory.toml {where} {key}: {value} sets {have[0]} without "
+                       + next(n for n in group if n not in data))
 
 
 def _check_roles(root, conf, overlay):

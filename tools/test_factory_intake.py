@@ -97,3 +97,40 @@ def test_unsupported_post_language_or_code_provider_is_refused_before_posting(tm
     proc = intake(tmp_path, '[language]\nposts = "en"\n' + roles, {**F, "envelope": {"provider": "newrelic"}})
     assert proc.stderr.strip().startswith("refused: envelope: envelope needs provider_finding_id")
     assert not (tmp_path / "gh-called").exists() and not (tmp_path / ".compozy" / "tasks").exists()
+
+
+def test_signature_dedupes_a_library_error_across_consumers():
+    """Real lib-schema-migration-apply errors: volatile parts go, the step and the defect stay."""
+    cases = [
+        ("apply failed: atlas command failed: signal: killed: ",
+         "apply failed: atlas command failed: signal: killed", "apply",
+         "apply failed: atlas command failed: signal: killed%"),
+        ('status failed: atlas command failed: exit status 1: Error: mysql: query "SELECT * FROM t WHERE a = \'x\'": '
+         "Error 1146 (42S02): Table 'db.t' doesn't exist",
+         "status failed: atlas command failed: exit status <n>: Error: mysql: query <q>: Error <n> (<sqlstate>): "
+         "Table <q> doesn't exist", "status",
+         "status failed: atlas command failed: exit status %: Error: mysql: query %: Error % (%): Table % "
+         "doesn\\'t exist%"),
+        ('validate failed: atlas command failed: exit status 1: Error: replaying the migration directory: sql/migrate: '
+         'executing statement "CREATE VIEW `v` AS\nWITH RECURSIVE `g` (`email`) AS (',
+         "validate failed: atlas command failed: exit status <n>: Error: replaying the migration directory: "
+         "sql/migrate: executing statement <q>", "validate",
+         "validate failed: atlas command failed: exit status %: Error: replaying the migration directory: "
+         "sql/migrate: executing statement %"),
+        ("apply failed: atlas command failed: exit status 1: Error: mysql://u:p@db.prod.example.com:3306/x: "
+         "dial tcp 10.0.3.4:3306: lookup db.prod.example.com: no such host (SQLSTATE HY000)",
+         "apply failed: atlas command failed: exit status <n>: Error: <url> dial tcp <host>: lookup <host>: "
+         "no such host (SQLSTATE <sqlstate>)", "apply",
+         "apply failed: atlas command failed: exit status %: Error: % dial tcp %: lookup %: no such host (SQLSTATE %)%"),
+    ]
+    for error, error_class, location, like in cases:
+        assert fe.signature(error) == {"error_class": error_class, "location": location, "like": like}, error
+    panics = [f"apply failed: atlas command failed: exit status 2: panic: runtime error: index out of range [0] "
+              f"with length 0\n\ngoroutine 1 [running]:\nExecute(0xc000{n}e310)" for n in (68, 69)]
+    assert fe.signature(panics[0]) == fe.signature(panics[1])
+    assert fe.signature("weird", "status")["location"] == "status"
+    assert fe.signature("weird", None)["location"] == "unknown"
+    assert len(fe.signature("x failed: " + "y" * 400)["error_class"]) == 200
+    proc = subprocess.run([sys.executable, str(REPO / "tools" / "factory_envelope.py"), "signature"],
+                          input=json.dumps({"error": cases[0][0], "step": None}), capture_output=True, text=True)
+    assert json.loads(proc.stdout)["error_class"] == cases[0][1]

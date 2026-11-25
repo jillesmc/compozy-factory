@@ -102,6 +102,9 @@ actually ran; otherwise walk it.
 ### signals/newrelic (read only)
 
 `.compozy/newrelic.toml` gives `<app>` and `<account_id>`. Nothing is written to New Relic.
+When the file has the scope keys (`accounts`, `logs_where`, `logs_facet`, `logs_traffic_where`),
+walk S1, S2 and S4 once more on an `nr-scope` item or finding (S2: the `signature` output and the
+same fingerprint for two consumers; S4: the payload's `traffic` query and `account_ids`).
 
 - **S1 `signals.list_new`** (row 24). Observe one check-in of `factory-sentinel` carrying items from the
   `newrelic/errors`, `newrelic/logs` or `newrelic/issues` sources (the daemon polls them; never poll

@@ -148,6 +148,40 @@ def test_fr_ut_037_newrelic_config_must_exist_and_parse(workspace):
     assert refusal(workspace) == "refused: factory.toml [roles.signals.newrelic] config: .compozy/newrelic.toml not found"
 
 
+SCOPE = ("accounts = [1234567, 7654321]\nlogs_where = \"global_event_name = 'MIGRATION' AND level = 'ERROR'\"\n"
+         "logs_facet = \"service_name, step\"\nlogs_traffic_where = \"global_event_name = 'MIGRATION'\"\n")
+
+
+def test_newrelic_config_optional_scope_keys(workspace):
+    nr = workspace / ".compozy" / "newrelic.toml"
+    base = nr.read_text()
+    for extra in ("", SCOPE, "accounts = [1]\n", 'other_placeholder = "x"\n'):  # unknown keys are the extension's
+        nr.write_text(base + extra)
+        assert fl.load_factory_toml(workspace)
+    where = "refused: factory.toml [roles.signals.newrelic] config: .compozy/newrelic.toml "
+    for extra, tail in (("accounts = []\n", "accounts must be a list of 1 to 20 positive integers"),
+                        ("accounts = [0]\n", "accounts must be a list of 1 to 20 positive integers"),
+                        ('accounts = ["1"]\n', "accounts must be a list of 1 to 20 positive integers"),
+                        ("accounts = [true]\n", "accounts must be a list of 1 to 20 positive integers"),
+                        ("accounts = 1\n", "accounts must be a list of 1 to 20 positive integers"),
+                        (f"accounts = {list(range(1, 22))}\n", "accounts must be a list of 1 to 20 positive integers"),
+                        ('logs_where = "a = \'{{app}}\'"\nlogs_facet = "b"\nlogs_traffic_where = "c"\n',
+                         "logs_where must be a non-empty string without a newline, ;, {{ or }}"),
+                        (SCOPE.replace("'ERROR'", "'ERROR'; DROP"), "logs_where must be a non-empty string without "
+                                                                     "a newline, ;, {{ or }}"),
+                        (SCOPE.replace('"service_name, step"', '"""a\nb"""'), "logs_facet must be a non-empty "
+                                                                             "string without a newline, ;, {{ or }}"),
+                        (SCOPE.replace('"service_name, step"', '" "'), "logs_facet must be a non-empty string "
+                                                                     "without a newline, ;, {{ or }}"),
+                        ('logs_where = "a"\nlogs_facet = "b"\nlogs_traffic_where = 1\n',
+                         "logs_traffic_where must be a non-empty string without a newline, ;, {{ or }}"),
+                        ('logs_where = "a"\n', "sets logs_where without logs_facet"),
+                        ('logs_where = "a"\nlogs_facet = "b"\n', "sets logs_where without logs_traffic_where"),
+                        ('logs_traffic_where = "a"\n', "sets logs_traffic_where without logs_where")):
+        nr.write_text(base + extra)
+        assert refusal(workspace) == where + tail, extra
+
+
 def test_fr_ut_052_newrelic_config_path_is_literal(workspace):
     (workspace / "config").mkdir()
     shutil.copy(workspace / ".compozy" / "newrelic.toml", workspace / "config" / "prod-newrelic.toml")

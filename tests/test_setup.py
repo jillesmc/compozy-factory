@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
 import factorylib as fl
 import pytest
@@ -46,9 +47,22 @@ READ_ONLY = (["workspace", "info"], ["extension", "list"],
              ["agent", "instance", "list"], ["agent", "heartbeat", "sources"], ["skill", "info"])
 
 
+def stamped_checkout(dest, home):
+    """A copy of the checkout whose conformance records match the installed adapter trees, so these tests do not
+    depend on the shipped records being current (they go stale with every adapter change until re-recorded)."""
+    for part in ("agents", "tools", "bin", "skills", "contracts", "conformance"):
+        shutil.copytree(REPO / part, dest / part, ignore=shutil.ignore_patterns("__pycache__"))
+    for record in (dest / "conformance").glob("*.json"):
+        data = json.loads(record.read_text())
+        data["adapter_digest"] = fl.tree_digest(home / "factory" / "adapters" / f"{data['role']}-{data['provider']}")
+        record.write_text(json.dumps(data))
+    return dest
+
+
 @pytest.fixture
-def env(fake, installed, tmp_path):
-    """Fake compozy and gh, extensions active, V1 staged and active for repo A, empty project directory."""
+def env(fake, installed, tmp_path, home):
+    """Fake compozy and gh, extensions active, V1 staged and active for repo A, empty project directory, setup run
+    from a stamped checkout."""
     (fake.dir / "gh").write_text(FAKE_GH)
     (fake.dir / "gh").chmod(0o755)
     gh_state, gh_log = tmp_path / "gh.json", tmp_path / "gh.jsonl"
@@ -60,7 +74,7 @@ def env(fake, installed, tmp_path):
     policy_env = {"GITHUB_APP_POLICY_FILE": str(cfg / "policy.toml")}
     _, v1, _ = fl.stage_policy(policy_env)
     fake.load()
-    fake.state["extensions"] = [{"name": "newrelic", "version": "0.4.0", "state": "active"},
+    fake.state["extensions"] = [{"name": "newrelic", "version": "0.6.0", "state": "active"},
                                 {"name": "github-app-review", "version": "0.3.0", "state": "active"}]
     fake.state["policy"] = {"secret": v1, "running": v1}
     fake.save()
@@ -75,8 +89,9 @@ def env(fake, installed, tmp_path):
                  ["push", "-q", "origin", "HEAD:develop"]):
         git(git_env, "-C", str(root), *args)
     fake.log_path.write_text("")  # drop bin/install's read-back calls
+    checkout = stamped_checkout(tmp_path / "checkout", home)
     return {**installed, **policy_env, **git_env, "FAKE_GH_STATE": str(gh_state), "FAKE_GH_LOG": str(gh_log),
-            "V1": v1, "ORIGIN": str(origin)}
+            "V1": v1, "ORIGIN": str(origin), "CHECKOUT": str(checkout)}
 
 
 def git(env, *args):
@@ -89,8 +104,9 @@ def project(tmp_path):
     return tmp_path / "acme-api"
 
 
-def setup(project, env, answers=ANSWERS, tty=True, repo_root=REPO, work_key=""):
+def setup(project, env, answers=ANSWERS, tty=True, repo_root=None, work_key=""):
     """work_key None: no --work-key, so a terminal is asked for it (the next answer line)."""
+    repo_root = repo_root or Path(env["CHECKOUT"])
     args = (str(project), "--from", str(REPO / "factory.example.toml"),
             *(() if work_key is None else ("--work-key", work_key)))
     if tty:
@@ -325,7 +341,7 @@ def test_s6_4_a_working_copy_edited_during_the_prompt_is_refused(fake, env, proj
     import pty
     full = {**{k: v for k, v in os.environ.items() if not k.startswith("COMPOZY_")}, **env}
     master, slave = pty.openpty()
-    argv = [str(REPO / "bin" / "setup"), str(project), "--from", str(REPO / "factory.example.toml"),
+    argv = [str(Path(env["CHECKOUT"]) / "bin" / "setup"), str(project), "--from", str(REPO / "factory.example.toml"),
             "--work-key", ""]
     proc = subprocess.Popen(argv, stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=full)
     os.close(slave)
@@ -640,3 +656,13 @@ def test_f7_5_github_work_keys_are_hash_numbers(installed, project, monkeypatch,
     for bad in ("GH-1", "123"):
         assert refused_key(capsys, conf, bad, project).startswith(f"refused: work key '{bad}' does not match the "
                                                                   "work/github adapter's key_format ^#\\d+$")
+
+
+def test_setup_refuses_newrelic_before_0_6_0(fake, env, project):
+    """The signals adapter reads `accounts` and the `logs_*` placeholders, which newrelic 0.6.0 introduced."""
+    fake.load()
+    fake.state["extensions"][0]["version"] = "0.5.0"
+    fake.save()
+    proc = setup(project, env)
+    assert "refused: extension newrelic 0.5.0 is active; needs an active 0.6.0 or later" in proc.stdout, proc.stdout
+    assert mutations(fake) == []

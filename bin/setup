@@ -44,7 +44,7 @@ import factorylib as fl  # noqa: E402
 
 BIN = Path(__file__).resolve().parent
 REL_TOML, REL_NR, REL_REVIEW = ".compozy/factory/factory.toml", ".compozy/newrelic.toml", "REVIEW.md"
-EXTENSIONS = {"newrelic": ("signals", (0, 4, 0)), "github-app-review": ("review", (0, 3, 0))}  # name: (role, minimum)
+EXTENSIONS = {"newrelic": ("signals", (0, 6, 0)), "github-app-review": ("review", (0, 3, 0))}  # name: (role, minimum)
 GHAR = "github-app-review"
 BRANCH = "factory/setup"
 PR_TITLE = "chore: onboard the factory (factory.toml, newrelic.toml, REVIEW.md)"
