@@ -380,3 +380,12 @@ def test_fix9_dispatcher_cleans_up_the_executor_on_merged_and_closed():  # E2E-0
     merge = gatekeeper.split("## Merge into the base branch")[1].split("\n## ")[0]
     assert "archive" not in merge and "worktree_remove" not in merge and "executor" not in merge
     assert "3. Upsert the **promotion PR**" in merge and "4. Answer `merged #<pr> at <sha>`." in merge
+
+
+def test_sentinel_keeps_proposals_inside_the_daemon_limits():
+    # heartbeat/triage_reply.go: title > 120 or body > 500 runes drops the whole check-in.
+    text = agent_text("factory-sentinel")
+    assert "(up to 120 characters)" in text
+    assert "keep each body under 450" in text
+    assert "at most 3 of them (`+<n>` for the rest)" in text
+    assert 'The final\nmessage is only the JSON object `{"proposals": [...]}`' in text

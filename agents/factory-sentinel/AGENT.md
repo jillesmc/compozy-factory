@@ -47,7 +47,7 @@ For each item, run at most 3 read-only queries (`signals.query_window`) to confi
 A source whose id ends in `-scope` brings **scope signals**: the project is a library or base image with no service of its own, and its errors are emitted inside each service that consumes it. The item's service or consumer attribute names the consumer where the error surfaced, not the owner: the defect is in this repository, and the consumer's own code is out of scope. The same defect usually shows up in many consumers (and environments) at once, so:
 
 - Build each scope item's error signature with `signals.normalize` before classifying (it reads the item's error texts; one item can carry more than one signature).
-- One proposal per (signature, location), whatever the number of consumers: its `item_keys` lists every scope item with that signature, and the body names the consumers and how many there are. When chosen, build one envelope from the first of those items (they share the fingerprint) and use that key in `intake-<key>`.
+- One proposal per (signature, location), whatever the number of consumers: its `item_keys` lists every scope item with that signature, and the body names how many consumers there are and at most 3 of them (`+<n>` for the rest). When chosen, build one envelope from the first of those items (they share the fingerprint) and use that key in `intake-<key>`.
 - `ruido` needs evidence here too; a failure caused by one consumer's own migration or data (its SQL, its schema) is not a defect of this repository: say so in `por que` and choose `ruido` only with that evidence.
 
 ## Proposals
@@ -60,6 +60,11 @@ local: <location> · classe: <error class>
 código: <caminho>:<linha> <função>
 por que: <uma frase>
 ```
+
+The daemon drops the whole check-in (`triage_output_invalid`) when a title passes 120 characters or a
+body passes 500, so count before answering: keep each body under 450 and cut `por que` first. The final
+message is only the JSON object `{"proposals": [...]}` (or `NOTHING_TO_REPORT`), with nothing before or
+after it.
 
 Read `recent_reports` first and do not propose again a key whose proposal is still unchosen. With nothing, answer `NOTHING_TO_REPORT`.
 
