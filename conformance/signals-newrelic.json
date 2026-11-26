@@ -1,10 +1,10 @@
 {
-  "adapter_digest": "sha256:7ee6a9614802f83ee4a3b6869c04e1de58f238c444f0b227a98ed009ace750ba",
+  "adapter_digest": "sha256:f0ed508b93a48ad89400e54db0eddc6231755457fe49120739fc5ec43a8d956d",
   "environment": {
     "extensions": {
-      "newrelic": "0.4.0"
+      "newrelic": "0.6.0"
     },
-    "factory_commit": "750a26699ccd9da532db2e925174e9830f8ed509",
+    "factory_commit": "42bf372fc9501efb811de647c25e98939b97aac2",
     "provider_site": "newrelic account 1234567 app acme-portal-production"
   },
   "operations": {
@@ -16,6 +16,6 @@
   "outcome": "pass",
   "provider": "newrelic",
   "role": "signals",
-  "timestamp": "2026-11-19T14:25:55Z",
+  "timestamp": "2026-11-26T14:39:25Z",
   "trace": "conformance/signals-newrelic.trace.jsonl"
 }
