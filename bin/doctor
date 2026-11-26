@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""Report every factory instance that is not running unattended, across all workspaces. Read-only.
+
+Usage: bin/doctor [--json]
+
+For each workspace with `.compozy/factory/factory.toml`, every `[team] agents` always-on agent must have an
+active instance. One line per finding, `<level> <workspace> <agent> <detail>`:
+
+  missing    no instance for a team agent          → bin/attach <ws>
+  paused     pause_reason unattended|fatigue|…     → compozy agent instance resume <id> (after fixing the cause)
+  attention  needs_attention (main stopped, pending approval or clarification)
+  warn       unattended turns ≥ 80 % of the limit, failure streak, failing source, checks disabled,
+             check-in overdue > 30 min (scheduler did not wake it), no check-in for 24 h
+
+Then `ok <n> instances`. Exit 1 when there is any finding other than `warn`, so a timer can alert on it.
+Changes nothing: resuming an `unattended` or `fatigue` pause stays the operator's decision.
+"""
+import argparse
+import json
+import re
+import sys
+import tomllib
+from datetime import datetime, timedelta
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import factorylib as fl  # noqa: E402
+
+NEAR = 0.8  # share of unattended_turn_limit that warns before the daemon pauses the instance
+OVERDUE = timedelta(minutes=30)  # next_wake_at in the past by more: the scheduler did not wake it
+SILENT = timedelta(hours=24)  # beyond the 4h quiet backoff cap and a night outside active hours
+NEXT = {"unattended": "unattended turn limit reached: read the main session, then resume",
+        "fatigue": "consecutive failed check-ins: fix the cause, then resume",
+        "definition_missing": "definition missing: bin/install",
+        "manual": "paused by the operator"}
+
+
+def when(stamp):
+    """RFC 3339 from the daemon (nanoseconds, `Z`) as an aware datetime; None when empty or unreadable."""
+    try:
+        return datetime.fromisoformat(re.sub(r"(\.\d{6})\d+", r"\1", stamp.replace("Z", "+00:00")))
+    except (AttributeError, ValueError):
+        return None
+
+
+def instances():
+    found, cursor = [], ""
+    while True:
+        page = fl.compozy("agent", "instance", "list", "--all-workspaces", "--limit", "100",
+                          *(["--cursor", cursor] if cursor else []))
+        found += page.get("instances", [])
+        cursor = page.get("next_cursor") or ""
+        if not cursor:
+            return found
+
+
+def teams():
+    """workspace id -> (name, team agents) for every workspace that has a factory.toml."""
+    out = {}
+    for ws in fl.compozy("workspace", "list") or []:  # the CLI prints a bare JSON array
+        path = Path(ws["root_dir"]) / ".compozy" / "factory" / "factory.toml"
+        if path.is_file():
+            agents = [a for a in fl.team(tomllib.loads(path.read_text())) if a not in fl.ON_DEMAND]
+            out[ws["id"]] = (ws["name"], agents)
+    return out
+
+
+def findings(teams_by_ws, listed):
+    live = [i for i in listed if i.get("state") != "archived"]
+    seen = {(i["workspace_id"], i["agent_name"]) for i in live}
+    for ws_id, (name, agents) in teams_by_ws.items():
+        for agent in agents:
+            if (ws_id, agent) not in seen:
+                yield "missing", name, agent, f"no instance: bin/attach {name}"
+    names = {ws_id: name for ws_id, (name, _) in teams_by_ws.items()}
+    for inst in live:
+        if not inst["agent_name"].startswith("factory-"):
+            continue
+        where, agent, ref = names.get(inst["workspace_id"], inst["workspace_id"]), inst["agent_name"], inst["id"]
+        if inst.get("state") == "paused":
+            reason = inst.get("pause_reason") or "unknown"
+            yield "paused", where, agent, f"{reason}: {NEXT.get(reason, 'read the instance')} ({ref})"
+            continue
+        if inst.get("needs_attention"):
+            yield "attention", where, agent, f"main session {inst.get('main_session_id') or '-'} needs you ({ref})"
+        limit, turns = inst.get("unattended_turn_limit") or 0, inst.get("unattended_turns") or 0
+        if limit and turns >= NEAR * limit:
+            yield "warn", where, agent, f"unattended turns {turns}/{limit}"
+        if inst.get("failure_streak"):
+            yield "warn", where, agent, f"failure streak {inst['failure_streak']}/{inst.get('fatigue_limit')}"
+        for src in inst.get("sources") or []:
+            if src.get("failure_streak"):
+                yield "warn", where, agent, f"source {src.get('id')} failing ({src['failure_streak']}x)"
+        if inst.get("checks_enabled") is False:
+            yield "warn", where, agent, "check-ins disabled"
+        now, due, last = (when(inst.get(k)) for k in ("now", "next_wake_at", "last_wake_at"))
+        if now and due and now - due > OVERDUE:
+            yield "warn", where, agent, f"check-in overdue since {inst['next_wake_at']}"
+        if now and last and now - last > SILENT:
+            yield "warn", where, agent, f"no check-in since {inst['last_wake_at']}"
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--json", action="store_true", help="one JSON object per finding")
+    args = parser.parse_args()
+    listed = instances()
+    found = list(findings(teams(), listed))
+    for level, where, agent, detail in found:
+        if args.json:
+            print(json.dumps({"level": level, "workspace": where, "agent": agent, "detail": detail}))
+        else:
+            print(f"{level:<9} {where} {agent} {detail}")
+    factory = sum(i["agent_name"].startswith("factory-") and i.get("state") != "archived" for i in listed)
+    if not args.json:
+        print(f"ok {factory} instances")
+    sys.exit(1 if any(level != "warn" for level, *_ in found) else 0)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(2)

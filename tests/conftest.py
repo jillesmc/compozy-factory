@@ -64,6 +64,8 @@ if fail.get(" ".join(args[:2]), 0) > 0:
     sys.exit(1)
 if args[:2] == ["workspace", "info"]:
     out({"workspace": {"root_dir": state["root"]}})
+if args[:2] == ["workspace", "list"]:
+    out(state.get("workspaces", []))  # the real CLI prints a bare array, not an envelope
 if cmd == ["agent", "instance", "list"]:
     active = sum(i.get("state") == "active" for i in state["instances"])  # daemon-wide: + other workspaces
     out({"instances": state["instances"], "active_count": active + state.get("active_elsewhere", 0),
