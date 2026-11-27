@@ -64,6 +64,8 @@ if fail.get(" ".join(args[:2]), 0) > 0:
     sys.exit(1)
 if args[:2] == ["workspace", "info"]:
     out({"workspace": {"root_dir": state["root"]}})
+if args[:2] == ["session", "status"]:  # the real CLI prints a flat object (bin/doctor --fix)
+    out(state.get("sessions", {}).get(args[2], {"session_id": args[2], "state": "active"}))
 if args[:2] == ["workspace", "list"]:
     out(state.get("workspaces", []))  # the real CLI prints a bare array, not an envelope
 if cmd == ["agent", "instance", "list"]:

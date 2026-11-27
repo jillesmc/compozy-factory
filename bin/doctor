@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Report every factory instance that is not running unattended, across all workspaces. Read-only.
 
-Usage: bin/doctor [--json]
+Usage: bin/doctor [--fix] [--json]
 
 For each workspace with `.compozy/factory/factory.toml`, every `[team] agents` always-on agent must have an
 active instance. One line per finding, `<level> <workspace> <agent> <detail>`:
@@ -12,8 +12,13 @@ active instance. One line per finding, `<level> <workspace> <agent> <detail>`:
   warn       unattended turns ≥ 80 % of the limit, failure streak, failing source, checks disabled,
              check-in overdue > 30 min (scheduler did not wake it), no check-in for 24 h
 
-Then `ok <n> instances`. Exit 1 when there is any finding other than `warn`, so a timer can alert on it.
-Changes nothing: resuming an `unattended` or `fatigue` pause stays the operator's decision.
+Then `ok <n> instances`. Exit 1 when there is any finding other than `warn` or `fixed`, so a timer can
+alert on it.
+
+Without --fix it changes nothing. --fix repairs one case only: an `attention` instance whose main session is
+stopped (after a daemon shutdown its health is `dead`, so no check-in ever wakes it) with no pending approval,
+clarification or escalation gets the boundary prompt, which resumes it in place: `fixed ... woke ...`.
+Missing instances and `unattended`/`fatigue`/manual pauses stay the operator's decision.
 """
 import argparse
 import json
@@ -65,7 +70,20 @@ def teams():
     return out
 
 
-def findings(teams_by_ws, listed):
+def wake(main):
+    """Resume a main session the daemon left stopped (health dead: the heartbeat never wakes it) with the
+    boundary prompt. Only when nothing waits for the operator. Returns why it did not, or None when woken."""
+    status = fl.compozy("session", "status", main)
+    if status.get("state") != "stopped":
+        return f"main is {status.get('state')}"
+    if status.get("pending_interactions") or status.get("escalated"):
+        return "main waits for the operator"
+    key = f"doctor-wake-{main}-{status.get('updated_at', '')}"  # one wake per stop: a re-run while it starts is a no-op
+    fl.compozy("session", "prompt", main, fl.BOUNDARY, "--message-id", key, "--idempotency-key", key)
+    return None
+
+
+def findings(teams_by_ws, listed, fix=False):
     live = [i for i in listed if i.get("state") != "archived"]
     seen = {(i["workspace_id"], i["agent_name"]) for i in live}
     for ws_id, (name, agents) in teams_by_ws.items():
@@ -81,7 +99,17 @@ def findings(teams_by_ws, listed):
             reason = inst.get("pause_reason") or "unknown"
             yield "paused", where, agent, f"{reason}: {NEXT.get(reason, 'read the instance')} ({ref})"
             continue
-        if inst.get("needs_attention"):
+        main = inst.get("main_session_id")
+        if inst.get("needs_attention") and fix and main:
+            try:
+                why = wake(main)
+            except RuntimeError as exc:
+                why = f"wake failed ({exc})"
+            if why is None:
+                yield "fixed", where, agent, f"woke stopped main session {main} ({ref})"
+            else:
+                yield "attention", where, agent, f"main session {main} needs you: {why} ({ref})"
+        elif inst.get("needs_attention"):
             yield "attention", where, agent, f"main session {inst.get('main_session_id') or '-'} needs you ({ref})"
         limit, turns = inst.get("unattended_turn_limit") or 0, inst.get("unattended_turns") or 0
         if limit and turns >= NEAR * limit:
@@ -103,9 +131,10 @@ def findings(teams_by_ws, listed):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--json", action="store_true", help="one JSON object per finding")
+    parser.add_argument("--fix", action="store_true", help="wake stopped main sessions that wait for nobody")
     args = parser.parse_args()
     listed = instances()
-    found = list(findings(teams(), listed))
+    found = list(findings(teams(), listed, args.fix))
     for level, where, agent, detail in found:
         if args.json:
             print(json.dumps({"level": level, "workspace": where, "agent": agent, "detail": detail}))
@@ -114,7 +143,7 @@ def main():
     factory = sum(i["agent_name"].startswith("factory-") and i.get("state") != "archived" for i in listed)
     if not args.json:
         print(f"ok {factory} instances")
-    sys.exit(1 if any(level != "warn" for level, *_ in found) else 0)
+    sys.exit(1 if any(level not in ("warn", "fixed") for level, *_ in found) else 0)
 
 
 if __name__ == "__main__":

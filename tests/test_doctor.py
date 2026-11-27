@@ -10,12 +10,12 @@ def inst(agent, ws="ws_a", **extra):
             "checks_enabled": True, "needs_attention": False, "sources": [], **extra}
 
 
-def doctor(fake, workspace, instances):
+def doctor(fake, workspace, instances, *args):
     fake.state["workspaces"] = [{"id": "ws_a", "name": "acme", "root_dir": str(workspace)},
                                 {"id": "ws_b", "name": "plain", "root_dir": str(workspace.parent / "none")}]
     fake.state["instances"] = instances
     fake.save()
-    return run("doctor", env=fake.env())
+    return run("doctor", *args, env=fake.env())
 
 
 def test_healthy_team_is_ok_and_changes_nothing(fake, workspace):
@@ -57,3 +57,29 @@ def test_warnings_alone_exit_zero(fake, workspace):
     assert "warn      acme factory-scribe check-in overdue since 2026-11-26T17:00:00.5Z" in lines
     assert "warn      acme factory-dispatcher no check-in since 2026-11-25T12:00:00Z" in lines
     assert len(lines) == 4
+
+
+def test_fix_wakes_only_stopped_mains_that_wait_for_nobody(fake, workspace):
+    team = [inst(a) for a in fl.AGENTS]
+    team[0].update(needs_attention=True, main_session_id="sess-dead")
+    team[1].update(needs_attention=True, main_session_id="sess-asks")
+    fake.state["sessions"] = {
+        "sess-dead": {"state": "stopped", "pending_interactions": [], "updated_at": "t1"},
+        "sess-asks": {"state": "stopped", "pending_interactions": [{"kind": "approval"}], "updated_at": "t1"}}
+    proc = doctor(fake, workspace, team, "--fix")
+    assert proc.returncode == 1  # the pending approval still needs the operator
+    lines = proc.stdout.splitlines()
+    assert "fixed     acme factory-sentinel woke stopped main session sess-dead (ainst-factory-sentinel)" in lines
+    assert any(l.startswith("attention acme factory-scribe main session sess-asks needs you: main waits") for l in lines)
+    key = "doctor-wake-sess-dead-t1"
+    assert [c for c in fake.calls if c[:2] == ["session", "prompt"]] == [
+        ["session", "prompt", "sess-dead", fl.BOUNDARY, "--message-id", key, "--idempotency-key", key]]
+
+
+def test_fixed_alone_exits_zero_and_without_fix_nothing_is_touched(fake, workspace):
+    team = [inst(a) for a in fl.AGENTS]
+    team[0].update(needs_attention=True, main_session_id="sess-dead")
+    fake.state["sessions"] = {"sess-dead": {"state": "stopped", "pending_interactions": []}}
+    assert doctor(fake, workspace, team).returncode == 1
+    assert not [c for c in fake.calls if c[:2] in (["session", "prompt"], ["session", "status"])]
+    assert doctor(fake, workspace, team, "--fix").returncode == 0
